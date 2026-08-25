@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Custom App Tiles Builder — Prototype</title>
+
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- CodeMirror 5 — підключено заздалегідь, використається у фазах 2-3 для код-редакторів -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+
+<style>
+  :root { --accent: #4f46e5; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; font-size: 13px; color: #1e293b; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @keyframes shimmer { 0% { background-position: -200px 0; } 100% { background-position: 200px 0; } }
+  .skeleton-shimmer {
+    background-image: linear-gradient(90deg, #e2e8f0 25%, #eef2f7 37%, #e2e8f0 63%);
+    background-size: 400px 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- type="text/plain" навмисно, щоб Babel не підхопив тег автоматично: нижче
+     код транспілюється вручну з runtime:"classic", бо automatic JSX runtime
+     вставляє import-стейтмент, який не працює у звичайному (не-module) script. -->
+<script type="text/plain" id="app-source">
+const { useState, useRef, Fragment } = React;
+
+/* ============================== ІКОНКИ ==============================
+   Інлайн SVG у стилі outline (16px, stroke=currentColor) — обрано замість
+   підключення окремого CDN для іконок, щоб не залежати від зовнішнього
+   пакета і мати повний контроль над набором іконок. */
+const ICON_PATHS = {
+  undo: <><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></>,
+  redo: <><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></>,
+  gear: <><line x1="4" y1="6" x2="20" y2="6"/><circle cx="8" cy="6" r="2"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="16" cy="12" r="2"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="10" cy="18" r="2"/></>,
+  history: <><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></>,
+  monitor: <><rect x="2" y="4" width="20" height="13" rx="1"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></>,
+  smartphone: <><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></>,
+  chevronDown: <polyline points="6 9 12 15 18 9"/>,
+  chevronRight: <polyline points="9 6 15 12 9 18"/>,
+  search: <><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></>,
+  plus: <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+  eye: <><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></>,
+  triangleAlert: <><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
+  grip: <><circle cx="9" cy="5" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="19" r="1"/></>,
+  copy: <><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></>,
+  trash: <><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></>,
+  box: <rect x="3" y="3" width="18" height="18" rx="2"/>,
+  layers: <><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></>,
+  database: <><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 5V19A9 3 0 0 1 3 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></>,
+  type: <><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></>,
+  image: <><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></>,
+  button: <><rect x="3" y="7" width="18" height="10" rx="2"/><line x1="7" y1="12" x2="15" y2="12"/></>,
+  tabs: <><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></>,
+  filter: <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/>,
+  barChart: <><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></>,
+  progress: <><rect x="3" y="10" width="18" height="4" rx="2"/><rect x="3" y="10" width="10" height="4" rx="2" fill="currentColor" stroke="none"/></>,
+  divider: <line x1="3" y1="12" x2="21" y2="12"/>,
+  badgeIcon: <rect x="4" y="8" width="16" height="8" rx="4"/>,
+  x: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
+};
+function Icon({ name, size = 16, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+         strokeLinecap="round" strokeLinejoin="round" className={className}>
+      {ICON_PATHS[name] || null}
+    </svg>
+  );
+}
+
+/* ============================== МОК-ДАНІ ============================== */
+const SAMPLE_PAYLOAD = {
+  profile: {
+    name: "Olena Kovalenko",
+    email: "o.kovalenko@acme.com",
+    license_type: "frontline",
+    is_admin: false,
+    department: "Support"
+  },
+  tickets: [
+    { id: "INC-4021", summary: "VPN drops every 10 minutes", status: "open", priority: 1, sla_percent: 82, assignee: "M. Ross", source_reference_number: "INC-4021" },
+    { id: "INC-4022", summary: "Laptop replacement request", status: "closed", priority: 3, sla_percent: 100, assignee: null, source_reference_number: "INC-4022" },
+    { id: "REQ-1180", summary: "New monitor for desk 14", status: "pending", priority: 2, sla_percent: 45, assignee: "K. Adeyemi", source_reference_number: "REQ-1180" }
+  ],
+  meta: { total: 3, fetched_at: "2026-08-25T09:14:00Z" }
+};
+
+// OPEN QUESTION: у ТЗ згадується "configData", але його форма ніде не визначена.
+// Поки що навмисно НЕ додаємо його до автокомпліту / field picker (буде у фазі 5+).
+
+/* ============================== МОДЕЛЬ БЛОКІВ ==============================
+   Дерево блоків тайла. Для наочності демо-багу навмисно захардкоджено
+   Badge "Status" з правилом видимості, що посилається на неіснуюче поле
+   "staus" (буде показано і виправлено у фазі 2). */
+const INITIAL_BLOCKS = {
+  id: "card", type: "Container", name: "Card",
+  children: [
+    { id: "text-header", type: "Text", name: "Header", children: null },
+    {
+      id: "collection-tickets", type: "Collection", name: "Tickets",
+      binding: "apiData.tickets", transformerId: "filterINC",
+      children: [
+        {
+          id: "container-row", type: "Container", name: "Row",
+          children: [
+            { id: "text-id", type: "Text", name: "ID", children: null },
+            {
+              id: "badge-status", type: "Badge", name: "Status", children: null,
+              visibility: {
+                kind: "rule",
+                text: "item.staus == 'open'",
+                error: 'No field "staus" on item. Did you mean "status"?'
+              }
+            },
+            { id: "progress-sla", type: "Progress", name: "SLA", children: null }
+          ]
+        }
+      ]
+    },
+    { id: "text-empty", type: "Text", name: "Empty state", children: null }
+  ]
+};
+
+const CONTAINER_TYPES = ["Container", "Collection", "Tabs"];
+const TYPE_ICON = {
+  Container: "box", Text: "type", Image: "image", Button: "button", Tabs: "tabs",
+  Collection: "layers", Filter: "filter", Chart: "barChart", Progress: "progress",
+  Divider: "divider", Badge: "badgeIcon"
+};
+const INSERT_ITEMS = ["Text", "Image", "Button", "Container", "Tabs", "Collection", "Filter", "Chart", "Progress", "Divider"];
+
+let __idCounter = 100;
+function genId(prefix) { __idCounter += 1; return prefix + "-" + __idCounter; }
+function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
+function createBlock(type) {
+  const node = { id: genId(type.toLowerCase()), type, name: type, children: null };
+  if (CONTAINER_TYPES.includes(type)) node.children = [];
+  return node;
+}
+function reassignIds(node) {
+  node.id = genId(node.type.toLowerCase());
+  if (node.children) node.children.forEach(reassignIds);
+}
+function findNodeAndParent(root, id, parent) {
+  if (root.id === id) return { node: root, parent: parent || null };
+  if (root.children) {
+    for (let i = 0; i < root.children.length; i++) {
+      const res = findNodeAndParent(root.children[i], id, root);
+      if (res) return res;
+    }
+  }
+  return null;
+}
+function getPathTo(root, id, trail) {
+  const next = (trail || []).concat([root]);
+  if (root.id === id) return next;
+  if (root.children) {
+    for (let i = 0; i < root.children.length; i++) {
+      const res = getPathTo(root.children[i], id, next);
+      if (res) return res;
+    }
+  }
+  return null;
+}
+function flattenTree(node, depth, collapsedSet, out) {
+  out.push({ node, depth });
+  if (node.children && !collapsedSet.has(node.id)) {
+    node.children.forEach(c => flattenTree(c, depth + 1, collapsedSet, out));
+  }
+  return out;
+}
+// Фільтрує тікети, чий source_reference_number починається з "INC" — це
+// той самий трансформер "filterINC", який редагується у фазі 3.
+function applyTransform() {
+  return SAMPLE_PAYLOAD.tickets
+    .filter(t => t.source_reference_number.startsWith("INC"))
+    .map((r, i) => Object.assign({}, r, { __rowIndex: i }));
+}
+
+/* ============================== ДРІБНІ UI-ЕЛЕМЕНТИ ============================== */
+function Tooltip({ children }) {
+  return (
+    <span className="pointer-events-none absolute z-30 hidden group-hover/tip:block left-1/2 -translate-x-1/2 top-full mt-1
+                      max-w-[240px] whitespace-normal text-left bg-slate-900 text-white text-[10px] leading-snug px-2 py-1 rounded shadow-sm">
+      {children}
+    </span>
+  );
+}
+function Toast({ message }) {
+  if (!message) return null;
+  return (
+    <div className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[12px] px-3 py-1.5 rounded-md shadow z-50">
+      {message}
+    </div>
+  );
+}
+function StubDrawer({ title, onClose, children }) {
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end">
+      <div className="flex-1 bg-slate-900/10" onClick={onClose}/>
+      <div className="w-80 bg-white h-full border-l border-slate-200 shadow-lg flex flex-col">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">{title}</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={14}/></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 text-[12px] text-slate-400">{children}</div>
+      </div>
+    </div>
+  );
+}
+function SidePanel({ side, collapsed, onToggle, width, children }) {
+  const borderCls = side === "left" ? "border-r" : "border-l";
+  if (collapsed) {
+    return (
+      <div className={`w-8 shrink-0 bg-slate-50 flex flex-col items-center py-2 ${borderCls} border-slate-200`}>
+        <button onClick={onToggle} className="p-1.5 rounded hover:bg-slate-200 text-slate-500">
+          <Icon name="chevronRight" size={14} className={side === "left" ? "" : "rotate-180"}/>
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className={`flex flex-col shrink-0 bg-slate-50 ${borderCls} border-slate-200`} style={{ width }}>
+      <div className={`flex ${side === "left" ? "justify-end" : "justify-start"} px-1 pt-1`}>
+        <button onClick={onToggle} className="p-1 rounded hover:bg-slate-200 text-slate-400">
+          <Icon name="chevronRight" size={13} className={side === "left" ? "rotate-180" : ""}/>
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/* ============================== ВЕРХНІЙ БАР ============================== */
+function TopBar(props) {
+  const {
+    canUndo, canRedo, onUndo, onRedo,
+    tileName, renaming, setRenaming, tileNameInput, setTileNameInput, commitTileName,
+    saveStatus, onCycleSave, onRetrySave,
+    mode, setMode, onOpenSettings, onOpenHistory, onPublish
+  } = props;
+  const statusMeta = {
+    saved: { dot: "bg-emerald-500", text: "Saved", cls: "text-slate-500" },
+    saving: { dot: "bg-amber-500 animate-pulse", text: "Saving…", cls: "text-slate-500" },
+    error: { dot: "bg-red-500", text: "Not saved · Retry", cls: "text-red-600" }
+  }[saveStatus];
+  return (
+    <div className="h-12 shrink-0 flex items-center justify-between px-3 border-b border-slate-200 bg-white">
+      <div className="flex items-center gap-1">
+        <button disabled={!canUndo} onClick={onUndo} title="Undo"
+                className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent text-slate-600">
+          <Icon name="undo" size={15}/>
+        </button>
+        <button disabled={!canRedo} onClick={onRedo} title="Redo"
+                className="p-1.5 rounded hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent text-slate-600">
+          <Icon name="redo" size={15}/>
+        </button>
+        <div className="w-px h-5 bg-slate-200 mx-1.5"/>
+        {renaming ? (
+          <input autoFocus value={tileNameInput}
+                 onChange={e => setTileNameInput(e.target.value)}
+                 onBlur={commitTileName}
+                 onKeyDown={e => { if (e.key === "Enter") commitTileName(); if (e.key === "Escape") setRenaming(false); }}
+                 className="text-[13px] font-medium border border-[var(--accent)] rounded px-1.5 py-0.5 outline-none"/>
+        ) : (
+          <button onClick={() => setRenaming(true)} className="text-[13px] font-medium text-slate-800 hover:bg-slate-100 rounded px-1.5 py-0.5">
+            {tileName}
+          </button>
+        )}
+        <button onClick={onOpenSettings} title="Tile settings" className="p-1.5 rounded hover:bg-slate-100 text-slate-500">
+          <Icon name="gear" size={15}/>
+        </button>
+      </div>
+      <div className="flex items-center gap-2">
+        <button onClick={onCycleSave} title="Debug: cycle save state"
+                className="text-[10px] px-1.5 py-0.5 rounded border border-slate-200 text-slate-400 hover:bg-slate-100">
+          debug
+        </button>
+        <button onClick={saveStatus === "error" ? onRetrySave : undefined}
+                className={`flex items-center gap-1.5 text-[12px] ${statusMeta.cls} ${saveStatus === "error" ? "cursor-pointer underline decoration-dotted" : ""}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${statusMeta.dot}`}/>{statusMeta.text}
+        </button>
+        <button onClick={onOpenHistory} title="Version history" className="p-1.5 rounded hover:bg-slate-100 text-slate-500">
+          <Icon name="history" size={15}/>
+        </button>
+        <div className="flex items-center border border-slate-200 rounded-md overflow-hidden text-[12px]">
+          <button onClick={() => setMode("desktop")}
+                  className={`px-2 py-1 flex items-center gap-1 ${mode === "desktop" ? "bg-[var(--accent)] text-white" : "text-slate-500 hover:bg-slate-100"}`}>
+            <Icon name="monitor" size={13}/>Desktop
+          </button>
+          <button onClick={() => setMode("mobile")}
+                  className={`px-2 py-1 flex items-center gap-1 border-l border-slate-200 ${mode === "mobile" ? "bg-[var(--accent)] text-white" : "text-slate-500 hover:bg-slate-100"}`}>
+            <Icon name="smartphone" size={13}/>Mobile
+          </button>
+        </div>
+        <button onClick={onPublish} className="px-3 py-1.5 rounded-md bg-[var(--accent)] text-white text-[12px] font-medium hover:opacity-90">
+          Publish
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== НИЖНІЙ БАР ============================== */
+function BottomBar({ bottomPanel, onToggle }) {
+  const btnCls = (tab) => `px-2.5 py-1 rounded text-[12px] flex items-center gap-1.5 ${
+    bottomPanel.open && bottomPanel.tab === tab ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "text-slate-500 hover:bg-slate-100"
+  }`;
+  return (
+    <div className="h-10 shrink-0 flex items-center gap-2 px-3 border-t border-slate-200 bg-white">
+      <button onClick={() => onToggle("preview")} className={btnCls("preview")}><Icon name="monitor" size={13}/>Preview</button>
+      <button onClick={() => onToggle("debug")} className={btnCls("debug")}><Icon name="database" size={13}/>Debug</button>
+    </div>
+  );
+}
+function BottomPanel({ tab, onClose }) {
+  return (
+    <div className="border-t border-slate-200 bg-white flex flex-col" style={{ height: "40%" }}>
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-200">
+        <span className="text-[12px] font-medium capitalize text-slate-600">{tab}</span>
+        <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-400"><Icon name="x" size={13}/></button>
+      </div>
+      <div className="flex-1 flex items-center justify-center text-[12px] text-slate-400">
+        {tab === "preview" ? "Preview panel — буде реалізовано у фазі 4" : "Debug panel — буде реалізовано у фазі 4"}
+      </div>
+    </div>
+  );
+}
+
+/* ============================== ЛІВА ПАНЕЛЬ: LAYERS / INSERT ============================== */
+function LayerRow(props) {
+  const { node, depth, isSelected, hasChildren, isCollapsed, onToggleCollapse, onSelect,
+          isRoot, onDragStart, onDragOver, onDrop, isDropTarget } = props;
+  const iconName = TYPE_ICON[node.type] || "box";
+  return (
+    <div
+      draggable={!isRoot}
+      onDragStart={e => onDragStart(e, node.id)}
+      onDragOver={e => { e.preventDefault(); onDragOver(node.id); }}
+      onDrop={e => { e.preventDefault(); onDrop(node.id); }}
+      onClick={onSelect}
+      style={{ paddingLeft: 6 + depth * 14 }}
+      className={`flex items-center gap-1 py-1 pr-2 cursor-pointer text-[12px] border-t-2
+        ${isSelected ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "hover:bg-slate-100 text-slate-700"}
+        ${isDropTarget ? "border-t-[var(--accent)]" : "border-t-transparent"}`}>
+      <span onClick={e => { e.stopPropagation(); if (hasChildren) onToggleCollapse(); }}
+            className="w-3.5 h-3.5 flex items-center justify-center text-slate-400 shrink-0">
+        {hasChildren && <Icon name={isCollapsed ? "chevronRight" : "chevronDown"} size={12}/>}
+      </span>
+      <Icon name={iconName} size={13} className="text-slate-400 shrink-0"/>
+      <span className="truncate flex-1">{node.name}</span>
+      <span className="flex items-center gap-1 shrink-0">
+        {node.transformerId && (
+          <span className="relative group/tip text-[9px] font-mono px-1 rounded bg-violet-50 text-violet-600 border border-violet-200">
+            fx<Tooltip>Transformer "{node.transformerId}" — filters getTickets by source_reference_number</Tooltip>
+          </span>
+        )}
+        {node.visibility && (
+          <span className="relative group/tip text-slate-400">
+            <Icon name="eye" size={12}/>
+            <Tooltip>Visibility rule: {node.visibility.text}</Tooltip>
+          </span>
+        )}
+        {node.visibility && node.visibility.error && (
+          <span className="relative group/tip text-red-500">
+            <Icon name="triangleAlert" size={12}/>
+            <Tooltip>{node.visibility.error}</Tooltip>
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+function LayersTree({ blocks, selectedId, setSelectedId, collapsed, setCollapsed, search, drag, setDrag, onReorder }) {
+  const flat = flattenTree(blocks, 0, collapsed, []);
+  const q = search.trim().toLowerCase();
+  const filtered = q ? flat.filter(f => f.node.name.toLowerCase().includes(q) || f.node.type.toLowerCase().includes(q)) : flat;
+  return (
+    <div className="overflow-y-auto flex-1">
+      {filtered.map(({ node, depth }) => (
+        <LayerRow key={node.id} node={node} depth={q ? 0 : depth}
+          isSelected={selectedId === node.id}
+          hasChildren={!!(node.children && node.children.length > 0)}
+          isCollapsed={collapsed.has(node.id)}
+          isRoot={node.id === "card"}
+          isDropTarget={drag.overId === node.id}
+          onToggleCollapse={() => setCollapsed(prev => {
+            const n = new Set(prev);
+            n.has(node.id) ? n.delete(node.id) : n.add(node.id);
+            return n;
+          })}
+          onSelect={() => setSelectedId(node.id)}
+          onDragStart={(e, id) => setDrag({ id, overId: null })}
+          onDragOver={id => setDrag(d => ({ ...d, overId: id }))}
+          onDrop={id => { onReorder(drag.id, id); setDrag({ id: null, overId: null }); }}
+        />
+      ))}
+    </div>
+  );
+}
+function InsertGrid({ onInsert }) {
+  return (
+    <div className="grid grid-cols-2 gap-2 p-2 overflow-y-auto">
+      {INSERT_ITEMS.map(type => (
+        <button key={type} onClick={() => onInsert(type)}
+                className="flex flex-col items-center gap-1 border border-slate-200 rounded-md py-3 hover:border-[var(--accent)] hover:bg-[var(--accent)]/5 text-slate-600">
+          <Icon name={TYPE_ICON[type] || "box"} size={16}/>
+          <span className="text-[11px]">{type}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+function DataPanelStub({ onOpenStub }) {
+  return (
+    <div className="border-t border-slate-200 flex flex-col" style={{ height: "40%" }}>
+      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200">
+        <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Data</span>
+        <button onClick={onOpenStub} className="p-1 rounded hover:bg-slate-200 text-slate-500" title="Add data source">
+          <Icon name="plus" size={14}/>
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+        {/* OPEN QUESTION: панель розрахована на кілька API Actions на тайл,
+            але в моці навмисно показано лише одне джерело (getTickets). */}
+        <button onClick={onOpenStub} className="w-full text-left border border-slate-200 rounded-md px-2 py-1.5 text-[12px] flex items-center justify-between bg-white hover:border-[var(--accent)]">
+          <div className="flex items-center gap-1.5"><Icon name="database" size={13} className="text-slate-400"/><span>getTickets</span></div>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200">200</span>
+        </button>
+        <button onClick={onOpenStub} className="w-full text-left border border-slate-200 rounded-md px-2 py-1.5 text-[12px] flex items-center justify-between bg-white hover:border-[var(--accent)]">
+          <div className="flex items-center gap-1.5"><span className="font-mono text-[10px] px-1 rounded bg-violet-50 text-violet-600">fx</span>
+            <div><div>filterINC</div><div className="text-[10px] text-slate-400">filters getTickets</div></div>
+          </div>
+          <span className="text-[10px] text-slate-400">ok</span>
+        </button>
+        <div className="text-[11px] text-slate-400 px-1 py-1">Sample payload · 3 records</div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== КАНВАС ============================== */
+function LeafContent({ node, dataItem }) {
+  if (node.type === "Text") {
+    if (node.name === "Header") return <div className="text-[15px] font-semibold text-slate-800">My tickets</div>;
+    if (node.name === "Empty state") return <div className="text-[12px] text-slate-400 italic py-1">No tickets to show</div>;
+    if (node.name === "ID" && dataItem) return <div className="text-[12px] font-mono text-slate-600">{dataItem.id}</div>;
+    return <div className="text-[13px] text-slate-700">{node.name}</div>;
+  }
+  if (node.type === "Badge") {
+    const status = dataItem ? dataItem.status : "open";
+    const styles = {
+      open: "bg-blue-50 text-blue-600 border-blue-200",
+      closed: "bg-slate-100 text-slate-500 border-slate-200",
+      pending: "bg-amber-50 text-amber-600 border-amber-200"
+    };
+    return <span className={`text-[11px] px-2 py-0.5 rounded-full border ${styles[status] || styles.open}`}>{status}</span>;
+  }
+  if (node.type === "Progress") {
+    const skeleton = dataItem && dataItem.__rowIndex === 1;
+    if (skeleton) return <div className="h-2 w-16 rounded skeleton-shimmer"/>;
+    const pct = dataItem ? dataItem.sla_percent : 0;
+    return (
+      <div className="flex items-center gap-1.5 w-16">
+        <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
+          <div className="h-full bg-[var(--accent)]" style={{ width: pct + "%" }}/>
+        </div>
+        <span className="text-[10px] text-slate-400 tabular-nums">{pct}%</span>
+      </div>
+    );
+  }
+  return <div className="text-[12px] text-slate-400 border border-dashed border-slate-300 rounded px-2 py-1">{node.type} · {node.name}</div>;
+}
+function BlockWrapper({ node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, children, dataItem }) {
+  const isSelected = selectedId === node.id;
+  const isHovered = hoveredId === node.id;
+  const isRoot = node.id === "card";
+  // У Collection той самий блок-шаблон рендериться для кожного запису:
+  // рамку виділення показуємо на всіх екземплярах, а міні-тулбар — лише
+  // на першому, щоб не дублювати кнопки дій.
+  const showToolbar = !dataItem || dataItem.__rowIndex === 0;
+  return (
+    <div
+      onMouseEnter={e => { e.stopPropagation(); setHoveredId(node.id); }}
+      onMouseLeave={e => { e.stopPropagation(); setHoveredId(prev => (prev === node.id ? null : prev)); }}
+      onClick={e => { e.stopPropagation(); onSelect(node.id); }}
+      className={`relative ${isSelected ? "outline outline-2 outline-[var(--accent)] outline-offset-[-1px]" : isHovered ? "outline outline-1 outline-slate-300 outline-offset-[-1px]" : ""}`}>
+      {isSelected && !isRoot && showToolbar && (
+        <div className="absolute -top-7 left-0 flex items-center gap-0.5 bg-slate-900 text-white rounded-md px-1 py-1 shadow-sm z-20">
+          <button title="Drag" className="p-1 hover:bg-white/10 rounded cursor-grab"><Icon name="grip" size={13}/></button>
+          <button title="Duplicate" onClick={e => { e.stopPropagation(); onDuplicate(node.id); }} className="p-1 hover:bg-white/10 rounded"><Icon name="copy" size={13}/></button>
+          <button title="Wrap in container" onClick={e => { e.stopPropagation(); onWrap(node.id); }} className="p-1 hover:bg-white/10 rounded"><Icon name="box" size={13}/></button>
+          <button title="Delete" onClick={e => { e.stopPropagation(); onDelete(node.id); }} className="p-1 hover:bg-white/10 rounded text-red-300"><Icon name="trash" size={13}/></button>
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+function CanvasBlock(props) {
+  const { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, dataItem } = props;
+  const wrapperProps = { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, dataItem };
+
+  if (node.type === "Collection") {
+    const records = applyTransform();
+    return (
+      <BlockWrapper {...wrapperProps}>
+        <div className="flex flex-col gap-2 p-2">
+          {records.map(rec => (
+            <div key={rec.id} className="pl-3 border-l border-dashed border-slate-300">
+              {(node.children || []).map(child => (
+                <CanvasBlock key={child.id + "-" + rec.id} {...props} node={child} dataItem={rec}/>
+              ))}
+            </div>
+          ))}
+        </div>
+      </BlockWrapper>
+    );
+  }
+  if (CONTAINER_TYPES.includes(node.type)) {
+    const isRow = node.name === "Row";
+    return (
+      <BlockWrapper {...wrapperProps}>
+        <div className={isRow ? "flex items-center gap-3 p-2" : "flex flex-col gap-2 p-2"}>
+          {(node.children || []).map(child => (
+            <div key={child.id} className="pl-3 border-l border-dashed border-slate-300">
+              <CanvasBlock {...props} node={child}/>
+            </div>
+          ))}
+        </div>
+      </BlockWrapper>
+    );
+  }
+  return (
+    <BlockWrapper {...wrapperProps}>
+      <div className="p-1">
+        <LeafContent node={node} dataItem={dataItem}/>
+      </div>
+    </BlockWrapper>
+  );
+}
+function Breadcrumb({ blocks, selectedId }) {
+  const path = selectedId ? getPathTo(blocks, selectedId, []) : null;
+  if (!path) {
+    return <div className="text-[11px] text-slate-400 px-3 py-2 border-t border-slate-200 bg-white">Select a block to see its path</div>;
+  }
+  // OPEN QUESTION / design decision: усередині Collection ми навмисно
+  // використовуємо окремий префікс "item" (а не "apiData"), щоб рівні
+  // даних відрізнялись явно — це головний захист від "посилаюсь на дані
+  // не того рівня".
+  const isItemScope = path.slice(0, -1).some(n => n.type === "Collection");
+  return (
+    <div className="flex items-center justify-between px-3 py-2 border-t border-slate-200 bg-white text-[11px]">
+      <div className="flex items-center gap-1 text-slate-500 overflow-x-auto">
+        {path.map((n, i) => (
+          <Fragment key={n.id}>
+            {i > 0 && <span className="text-slate-300">›</span>}
+            <span className={i === path.length - 1 ? "text-slate-700 font-medium" : ""}>{n.type} "{n.name}"</span>
+          </Fragment>
+        ))}
+      </div>
+      <span className={`ml-3 shrink-0 px-2 py-0.5 rounded-full border text-[10px] font-medium ${isItemScope ? "bg-violet-50 text-violet-600 border-violet-200" : "bg-slate-50 text-slate-500 border-slate-200"}`}>
+        scope: {isItemScope ? "item" : "apiData"}
+      </span>
+    </div>
+  );
+}
+
+/* ============================== ПРАВА ПАНЕЛЬ: ВЛАСТИВОСТІ ============================== */
+function PropertiesPanel({ selectedNode, tab, setTab }) {
+  if (!selectedNode) {
+    return <div className="p-4 text-[12px] text-slate-400">Select a block on the canvas to edit its properties.</div>;
+  }
+  return (
+    <div className="flex flex-col h-full">
+      <div className="px-3 py-2.5 border-b border-slate-200">
+        <div className="text-[13px] font-semibold text-slate-800">{selectedNode.type} <span className="text-slate-400 font-normal">"{selectedNode.name}"</span></div>
+      </div>
+      <div className="flex border-b border-slate-200 text-[12px]">
+        {["Data", "Appearance", "Spacing", "Interactions"].map(t => (
+          <button key={t} onClick={() => setTab(t)}
+                  className={`flex-1 px-2 py-2 border-b-2 -mb-px ${tab === t ? "border-[var(--accent)] text-[var(--accent)] font-medium" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+            {t}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-y-auto p-3 text-[12px] text-slate-400">
+        {tab} tab — буде реалізовано у фазі 2.
+      </div>
+    </div>
+  );
+}
+
+/* ============================== ГОЛОВНИЙ ДОДАТОК ============================== */
+function App() {
+  const [history, setHistory] = useState({ past: [], present: INITIAL_BLOCKS, future: [] });
+  const blocks = history.present;
+  const [selectedId, setSelectedId] = useState("badge-status");
+  const [hoveredId, setHoveredId] = useState(null);
+  const [collapsed, setCollapsed] = useState(new Set());
+  const [structureTab, setStructureTab] = useState("layers");
+  const [search, setSearch] = useState("");
+  const [drag, setDrag] = useState({ id: null, overId: null });
+
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [propsTab, setPropsTab] = useState("Data");
+
+  const [tileName, setTileName] = useState("My tickets");
+  const [renaming, setRenaming] = useState(false);
+  const [tileNameInput, setTileNameInput] = useState(tileName);
+
+  const [saveStatus, setSaveStatus] = useState("saved");
+  const [mode, setMode] = useState("desktop");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [bottomPanel, setBottomPanel] = useState({ open: false, tab: "preview" });
+
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  function showToast(msg) {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2200);
+  }
+
+  function commitBlocks(updater) {
+    setHistory(h => {
+      const next = typeof updater === "function" ? updater(h.present) : updater;
+      if (next === h.present) return h;
+      return { past: h.past.concat([h.present]), present: next, future: [] };
+    });
+  }
+  function undo() {
+    setHistory(h => {
+      if (!h.past.length) return h;
+      const previous = h.past[h.past.length - 1];
+      return { past: h.past.slice(0, -1), present: previous, future: [h.present].concat(h.future) };
+    });
+  }
+  function redo() {
+    setHistory(h => {
+      if (!h.future.length) return h;
+      const next = h.future[0];
+      return { past: h.past.concat([h.present]), present: next, future: h.future.slice(1) };
+    });
+  }
+
+  function handleInsert(type) {
+    const newNode = createBlock(type);
+    commitBlocks(prev => {
+      const clone = deepClone(prev);
+      const target = selectedId ? findNodeAndParent(clone, selectedId) : null;
+      let container;
+      if (target && CONTAINER_TYPES.includes(target.node.type)) container = target.node;
+      else if (target && target.parent) container = target.parent;
+      else container = clone;
+      container.children = container.children || [];
+      container.children.push(newNode);
+      return clone;
+    });
+    setSelectedId(newNode.id);
+  }
+  function duplicateBlock(id) {
+    commitBlocks(prev => {
+      const clone = deepClone(prev);
+      const info = findNodeAndParent(clone, id);
+      if (!info || !info.parent) { showToast("Can't duplicate the root block"); return prev; }
+      const copy = deepClone(info.node);
+      reassignIds(copy);
+      const idx = info.parent.children.indexOf(info.node);
+      info.parent.children.splice(idx + 1, 0, copy);
+      return clone;
+    });
+  }
+  function deleteBlock(id) {
+    commitBlocks(prev => {
+      const clone = deepClone(prev);
+      const info = findNodeAndParent(clone, id);
+      if (!info || !info.parent) { showToast("Can't delete the root block"); return prev; }
+      info.parent.children.splice(info.parent.children.indexOf(info.node), 1);
+      return clone;
+    });
+    setSelectedId(sel => (sel === id ? null : sel));
+  }
+  function wrapBlock(id) {
+    commitBlocks(prev => {
+      const clone = deepClone(prev);
+      const info = findNodeAndParent(clone, id);
+      if (!info || !info.parent) { showToast("Can't wrap the root block"); return prev; }
+      const wrapper = { id: genId("container"), type: "Container", name: "Group", children: [info.node] };
+      info.parent.children.splice(info.parent.children.indexOf(info.node), 1, wrapper);
+      return clone;
+    });
+  }
+  function reorderBlock(dragId, targetId) {
+    if (!dragId || !targetId || dragId === targetId) return;
+    commitBlocks(prev => {
+      const clone = deepClone(prev);
+      const dragInfo = findNodeAndParent(clone, dragId);
+      const targetInfo = findNodeAndParent(clone, targetId);
+      if (!dragInfo || !targetInfo || !dragInfo.parent || !targetInfo.parent) return prev;
+      dragInfo.parent.children.splice(dragInfo.parent.children.indexOf(dragInfo.node), 1);
+      const newIdx = targetInfo.parent.children.indexOf(targetInfo.node);
+      targetInfo.parent.children.splice(newIdx, 0, dragInfo.node);
+      return clone;
+    });
+  }
+
+  function commitTileName() {
+    setTileName(tileNameInput.trim() || tileName);
+    setRenaming(false);
+  }
+  function cycleSaveStatus() {
+    setSaveStatus(s => (s === "saved" ? "saving" : s === "saving" ? "error" : "saved"));
+  }
+  function retrySave() {
+    setSaveStatus("saving");
+    setTimeout(() => setSaveStatus("saved"), 900);
+  }
+
+  const selInfo = selectedId ? findNodeAndParent(blocks, selectedId) : null;
+  const selectedNode = selInfo ? selInfo.node : null;
+
+  return (
+    <div className="h-screen w-screen flex flex-col overflow-hidden bg-slate-100 text-[13px]">
+      <TopBar
+        canUndo={history.past.length > 0} canRedo={history.future.length > 0}
+        onUndo={undo} onRedo={redo}
+        tileName={tileName} renaming={renaming} setRenaming={r => { setTileNameInput(tileName); setRenaming(r); }}
+        tileNameInput={tileNameInput} setTileNameInput={setTileNameInput} commitTileName={commitTileName}
+        saveStatus={saveStatus} onCycleSave={cycleSaveStatus} onRetrySave={retrySave}
+        mode={mode} setMode={setMode}
+        onOpenSettings={() => setSettingsOpen(true)} onOpenHistory={() => setHistoryOpen(true)}
+        onPublish={() => showToast("Publish — буде доступно у фазі 4")}
+      />
+
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        <SidePanel side="left" collapsed={leftCollapsed} onToggle={() => setLeftCollapsed(v => !v)} width={260}>
+          <div className="flex-1 flex flex-col overflow-hidden" style={{ minHeight: 0 }}>
+            <div className="flex border-b border-slate-200 text-[12px]">
+              <button onClick={() => setStructureTab("layers")}
+                      className={`flex-1 px-2 py-2 border-b-2 -mb-px ${structureTab === "layers" ? "border-[var(--accent)] text-[var(--accent)] font-medium" : "border-transparent text-slate-500"}`}>
+                Layers
+              </button>
+              <button onClick={() => setStructureTab("insert")}
+                      className={`flex-1 px-2 py-2 border-b-2 -mb-px ${structureTab === "insert" ? "border-[var(--accent)] text-[var(--accent)] font-medium" : "border-transparent text-slate-500"}`}>
+                Insert
+              </button>
+            </div>
+            {structureTab === "layers" ? (
+              <>
+                <div className="p-2 border-b border-slate-200">
+                  <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded px-2 py-1">
+                    <Icon name="search" size={13} className="text-slate-400"/>
+                    <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search blocks"
+                           className="flex-1 text-[12px] outline-none bg-transparent"/>
+                  </div>
+                </div>
+                <LayersTree blocks={blocks} selectedId={selectedId} setSelectedId={setSelectedId}
+                            collapsed={collapsed} setCollapsed={setCollapsed} search={search}
+                            drag={drag} setDrag={setDrag} onReorder={reorderBlock}/>
+              </>
+            ) : (
+              <InsertGrid onInsert={handleInsert}/>
+            )}
+          </div>
+          <DataPanelStub onOpenStub={() => showToast("Редактор джерел даних — буде реалізовано у фазі 3")}/>
+        </SidePanel>
+
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 overflow-auto p-8 flex justify-center items-start" onClick={() => setSelectedId(null)}>
+            <div style={{ width: mode === "desktop" ? 420 : 340 }}
+                 className="bg-white border border-slate-200 rounded-lg shrink-0"
+                 onClick={e => e.stopPropagation()}>
+              <CanvasBlock node={blocks} selectedId={selectedId} hoveredId={hoveredId} setHoveredId={setHoveredId}
+                           onSelect={setSelectedId} onDuplicate={duplicateBlock} onDelete={deleteBlock} onWrap={wrapBlock}
+                           dataItem={null}/>
+            </div>
+          </div>
+          <Breadcrumb blocks={blocks} selectedId={selectedId}/>
+        </div>
+
+        <SidePanel side="right" collapsed={rightCollapsed} onToggle={() => setRightCollapsed(v => !v)} width={320}>
+          <PropertiesPanel selectedNode={selectedNode} tab={propsTab} setTab={setPropsTab}/>
+        </SidePanel>
+      </div>
+
+      {bottomPanel.open && <BottomPanel tab={bottomPanel.tab} onClose={() => setBottomPanel(p => ({ ...p, open: false }))}/>}
+      <BottomBar bottomPanel={bottomPanel}
+                 onToggle={tab => setBottomPanel(p => (p.open && p.tab === tab ? { open: false, tab } : { open: true, tab }))}/>
+
+      {settingsOpen && (
+        <StubDrawer title="Tile settings" onClose={() => setSettingsOpen(false)}>
+          Name, description, permissions, refresh interval — буде реалізовано у фазі 4.
+        </StubDrawer>
+      )}
+      {historyOpen && (
+        <StubDrawer title="Version history" onClose={() => setHistoryOpen(false)}>
+          Список чекпоінтів із Preview / Restore — буде реалізовано у фазі 4.
+        </StubDrawer>
+      )}
+      <Toast message={toast}/>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App/>);
+</script>
+<script>
+  var __src = document.getElementById("app-source").textContent;
+  var __out = Babel.transform(__src, { presets: [["react", { runtime: "classic" }]] }).code;
+  var __tag = document.createElement("script");
+  __tag.textContent = __out;
+  document.body.appendChild(__tag);
+</script>
+</body>
+</html>
