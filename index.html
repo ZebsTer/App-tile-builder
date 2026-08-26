@@ -86,6 +86,7 @@ const ICON_PATHS = {
   x: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
   eyeOff: <><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61C3.36 8.5 1 12 1 12s4 7 11 7a9.26 9.26 0 0 0 5.39-1.61"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></>,
   maximize2: <><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></>,
+  sparkles: <><path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4L12 3z"/><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z"/></>,
 };
 function Icon({ name, size = 16, className = "" }) {
   return (
@@ -608,17 +609,94 @@ function FieldPicker({ scope, onPick, onClose }) {
   );
 }
 
+/* ============================== АВТОКОМПЛІТ / HOVER: спільна логіка ==============================
+   Scope-aware: усередині Collection "item." дає поля тікета, "apiData." —
+   корінь. Поза колекцією "item" підсвічується як помилка (той самий захист
+   рівнів даних, що і в breadcrumb). */
+function getChildrenForPath(parentPath, scope) {
+  if (parentPath === "item") {
+    if (scope !== "item") return { error: `"item" is not available here — this block is outside a Collection (scope: ${scope}).` };
+    return { items: Object.keys(ITEM_SCHEMA).map(k => ({ key: k, type: ITEM_SCHEMA[k], value: SAMPLE_ITEM[k] })) };
+  }
+  if (parentPath === "apiData") {
+    return {
+      items: [
+        { key: "profile", type: "object", value: undefined },
+        { key: "tickets", type: "array[" + SAMPLE_PAYLOAD.tickets.length + "]", value: undefined },
+        { key: "meta", type: "object", value: undefined }
+      ]
+    };
+  }
+  if (parentPath === "apiData.profile") {
+    return { items: Object.keys(APIDATA_SCHEMA.profile).map(k => ({ key: k, type: APIDATA_SCHEMA.profile[k], value: SAMPLE_PAYLOAD.profile[k] })) };
+  }
+  if (parentPath === "apiData.meta") {
+    return { items: Object.keys(APIDATA_SCHEMA.meta).map(k => ({ key: k, type: APIDATA_SCHEMA.meta[k], value: SAMPLE_PAYLOAD.meta[k] })) };
+  }
+  return { items: [] };
+}
+// Знаходить хвіст тексту перед курсором, що виглядає як шлях (item.xxx / apiData.xxx.yyy),
+// що вже завершився крапкою — саме момент, коли слід показати підказки.
+function getPathFragment(before) {
+  const m = before.match(/(item|apiData)((?:\.[A-Za-z_$][\w$]*)*\.)([A-Za-z_$][\w$]*)?$/);
+  if (!m) return null;
+  return { root: m[1], middle: m[2], partial: m[3] || "" };
+}
+// Хвіст-під-курсором для hover-тултипа: розширюємо в обидва боки по [\w$.].
+function extractPathAt(line, ch) {
+  const isPathChar = c => c != null && /[\w$.]/.test(c);
+  let start = ch, end = ch;
+  while (start > 0 && isPathChar(line[start - 1])) start--;
+  while (end < line.length && isPathChar(line[end])) end++;
+  const token = line.slice(start, end).replace(/^\.+/, "").replace(/\.+$/, "");
+  if (!/^(item|apiData)(\.[A-Za-z_$][\w$]*)*$/.test(token)) return null;
+  return token;
+}
+
 /* ============================== КОД-РЕДАКТОР ==============================
    Один компонент, дві форми: inline (36px, один рядок) і expanded (номери
-   рядків, перенос рядків). CodeMirror 5, якщо доступний — інакше textarea. */
+   рядків, перенос рядків). CodeMirror 5, якщо доступний — інакше textarea.
+   Автокомпліт по крапці (scope-aware, зі значеннями) і hover-тултип зі
+   значенням для будь-якого шляху item./apiData. у тексті. */
 const HAS_CODEMIRROR = typeof CodeMirror !== "undefined";
-function CodeEditorField({ value, onChange, onBlur, variant }) {
+function CodeEditorField({ value, onChange, onBlur, variant, scope }) {
   const hostRef = useRef(null);
   const cmRef = useRef(null);
   const onChangeRef = useRef(onChange);
   const onBlurRef = useRef(onBlur);
+  const scopeRef = useRef(scope);
+  const suppressHintRef = useRef(false);
   onChangeRef.current = onChange;
   onBlurRef.current = onBlur;
+  scopeRef.current = scope;
+  const [hint, setHint] = useState(null);
+  const [hoverTip, setHoverTip] = useState(null);
+
+  function updateHint(cm) {
+    if (suppressHintRef.current) { suppressHintRef.current = false; setHint(null); return; }
+    if (cm.somethingSelected()) { setHint(null); return; }
+    const cursor = cm.getCursor();
+    const before = cm.getLine(cursor.line).slice(0, cursor.ch);
+    const frag = getPathFragment(before);
+    if (!frag) { setHint(null); return; }
+    const parentPath = frag.root + frag.middle.slice(0, -1);
+    const resolved = getChildrenForPath(parentPath, scopeRef.current);
+    const coords = cm.cursorCoords(true, "local");
+    const items = resolved.items ? resolved.items.filter(it => it.key.toLowerCase().startsWith(frag.partial.toLowerCase())) : [];
+    if (!resolved.error && !items.length) { setHint(null); return; }
+    setHint({
+      left: coords.left, top: coords.bottom, error: resolved.error || null, items,
+      replaceFrom: { line: cursor.line, ch: cursor.ch - frag.partial.length }, replaceTo: cursor
+    });
+  }
+  function pick(item) {
+    const cm = cmRef.current;
+    if (!cm || !hint) return;
+    suppressHintRef.current = true;
+    cm.replaceRange(item.key, hint.replaceFrom, hint.replaceTo);
+    cm.focus();
+    setHint(null);
+  }
 
   React.useEffect(() => {
     if (!HAS_CODEMIRROR || !hostRef.current) return;
@@ -634,9 +712,31 @@ function CodeEditorField({ value, onChange, onBlur, variant }) {
     if (variant === "inline") {
       cm.setOption("extraKeys", { Enter: () => {}, Tab: () => {} });
     }
-    cm.on("change", instance => { onChangeRef.current && onChangeRef.current(instance.getValue()); });
-    cm.on("blur", instance => { onBlurRef.current && onBlurRef.current(instance.getValue()); });
-    return () => { cmRef.current = null; if (hostRef.current) hostRef.current.innerHTML = ""; };
+    cm.on("change", instance => { onChangeRef.current && onChangeRef.current(instance.getValue()); updateHint(instance); });
+    cm.on("cursorActivity", instance => updateHint(instance));
+    cm.on("blur", instance => { onBlurRef.current && onBlurRef.current(instance.getValue()); setHint(null); });
+
+    const wrapperEl = cm.getWrapperElement();
+    function handleMouseMove(e) {
+      const pos = cm.coordsChar({ left: e.clientX, top: e.clientY });
+      const line = cm.getLine(pos.line) || "";
+      const path = extractPathAt(line, pos.ch);
+      if (!path) { setHoverTip(null); return; }
+      const err = checkFieldPath(path, scopeRef.current);
+      const val = err ? undefined : resolveValue(path, { item: SAMPLE_ITEM, apiData: SAMPLE_PAYLOAD });
+      const coords = cm.charCoords(pos, "local");
+      setHoverTip({ left: coords.left, top: coords.top, path, error: err, value: val });
+    }
+    function handleMouseLeave() { setHoverTip(null); }
+    wrapperEl.addEventListener("mousemove", handleMouseMove);
+    wrapperEl.addEventListener("mouseleave", handleMouseLeave);
+
+    return () => {
+      wrapperEl.removeEventListener("mousemove", handleMouseMove);
+      wrapperEl.removeEventListener("mouseleave", handleMouseLeave);
+      cmRef.current = null;
+      if (hostRef.current) hostRef.current.innerHTML = "";
+    };
     // eslint-disable-next-line
   }, []);
 
@@ -657,7 +757,36 @@ function CodeEditorField({ value, onChange, onBlur, variant }) {
                 className="w-full h-full font-mono text-[12px] border border-slate-200 rounded p-2 resize-none"/>
     );
   }
-  return <div ref={hostRef} className={variant === "inline" ? "cm-inline" : "cm-expanded h-full border border-slate-200 rounded overflow-hidden"}/>;
+  return (
+    <div className="relative">
+      <div ref={hostRef} className={variant === "inline" ? "cm-inline" : "cm-expanded h-full border border-slate-200 rounded overflow-hidden"}/>
+      {hint && (
+        <div className="absolute z-40 w-56 max-h-52 overflow-y-auto bg-white border border-slate-200 rounded-md shadow-lg py-1"
+             style={{ left: hint.left, top: hint.top + 4 }}>
+          {hint.error ? (
+            <div className="px-2 py-1.5 text-[10px] text-red-600 flex items-start gap-1">
+              <Icon name="triangleAlert" size={10} className="mt-0.5 shrink-0"/>{hint.error}
+            </div>
+          ) : hint.items.length ? hint.items.map(it => (
+            <button key={it.key} onMouseDown={e => { e.preventDefault(); pick(it); }}
+                    className="w-full flex items-center justify-between gap-2 px-2 py-1 hover:bg-[var(--accent)]/10 text-left">
+              <span className="text-[11px] font-mono text-slate-700">{it.key}</span>
+              <span className="flex items-center gap-1 shrink-0">
+                {it.value !== undefined && <span className="text-[10px] text-slate-400 truncate max-w-[80px]">{formatFieldValue(it.value)}</span>}
+                <span className="text-[9px] px-1 rounded bg-slate-100 text-slate-400">{it.type}</span>
+              </span>
+            </button>
+          )) : null}
+        </div>
+      )}
+      {hoverTip && (
+        <div className="absolute z-40 pointer-events-none bg-slate-900 text-white text-[10px] font-mono px-2 py-1 rounded shadow-sm whitespace-nowrap"
+             style={{ left: hoverTip.left, top: hoverTip.top - 26 }}>
+          {hoverTip.error ? hoverTip.error : `${hoverTip.path} = ${formatFieldValue(hoverTip.value)}`}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ============================== HIDE THIS BLOCK ============================== */
@@ -780,7 +909,7 @@ function CodeModeBlock({ vis, scope, onLocalChange, onCommitChange, onExpand }) 
     <div className="space-y-1">
       <div className="flex items-center gap-1">
         <div className="flex-1 min-w-0">
-          <CodeEditorField value={vis.code || ""} variant="inline"
+          <CodeEditorField value={vis.code || ""} variant="inline" scope={scope}
             onChange={v => onLocalChange(Object.assign({}, vis, { code: v }))}
             onBlur={v => onCommitChange(Object.assign({}, vis, { code: v }))}/>
         </div>
@@ -842,6 +971,76 @@ function EmptyBehaviorField({ value, onLocalChange, onCommitChange }) {
     </div>
   );
 }
+/* ============================== AI: rewrite / suggest layout (завжди diff, ніколи напряму) ============================== */
+const AI_TEXT_SUGGESTIONS = {
+  "Header": "Your support tickets",
+  "Empty state": "You're all caught up — no open tickets."
+};
+function AiDiffModal({ title, children, onApply, onDiscard }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
+      <div className="bg-white rounded-lg shadow-xl border border-slate-200 w-96 p-4">
+        <div className="flex items-center gap-1.5 text-[13px] font-semibold text-violet-700 mb-3"><Icon name="sparkles" size={14}/>{title}</div>
+        {children}
+        <div className="flex justify-end gap-2 mt-3">
+          <button onClick={onDiscard} className="px-3 py-1.5 text-[12px] rounded border border-slate-200 hover:bg-slate-50">Discard</button>
+          <button onClick={onApply} className="px-3 py-1.5 text-[12px] rounded bg-violet-600 text-white hover:opacity-90">Apply</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function AiRewriteModal({ state, onApply, onDiscard }) {
+  if (!state) return null;
+  return (
+    <AiDiffModal title="AI: Rewrite text" onApply={onApply} onDiscard={onDiscard}>
+      <div className="text-[10px] font-semibold text-slate-400 uppercase mb-1">Current</div>
+      <div className="text-[12px] font-mono bg-red-50 border border-red-200 text-red-700 rounded p-2 line-through opacity-70 mb-2">{state.oldText}</div>
+      <div className="text-[10px] font-semibold text-slate-400 uppercase mb-1">Suggested</div>
+      <div className="text-[12px] font-mono bg-emerald-50 border border-emerald-200 text-emerald-700 rounded p-2">{state.newText}</div>
+    </AiDiffModal>
+  );
+}
+function AiLayoutModal({ state, onApply, onDiscard }) {
+  if (!state) return null;
+  return (
+    <AiDiffModal title="AI: Suggest layout" onApply={onApply} onDiscard={onDiscard}>
+      <div className="text-[12px] text-slate-600 bg-violet-50 border border-violet-200 rounded p-3">{state.description}</div>
+    </AiDiffModal>
+  );
+}
+
+/* ============================== ШОРТКАТИ ============================== */
+function ShortcutsOverlay({ onClose }) {
+  const rows = [
+    ["⌘Z / Ctrl+Z", "Undo"],
+    ["⌘⇧Z / Ctrl+Shift+Z", "Redo"],
+    ["⌘C / Ctrl+C", "Copy selected block"],
+    ["⌘V / Ctrl+V", "Paste block"],
+    ["⌘⌥V / Ctrl+Alt+V", "Paste style only"],
+    ["Delete", "Delete selected block"],
+    ["?", "Show this cheatsheet"]
+  ];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl border border-slate-200 w-96" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">Keyboard shortcuts</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={16}/></button>
+        </div>
+        <div className="p-2">
+          {rows.map(([keys, label]) => (
+            <div key={label} className="flex items-center justify-between px-2 py-1.5 text-[12px]">
+              <span className="text-slate-600">{label}</span>
+              <span className="font-mono text-[11px] bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 text-slate-500">{keys}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConfirmDialog({ message, onConfirm, onCancel }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
@@ -855,8 +1054,22 @@ function ConfirmDialog({ message, onConfirm, onCancel }) {
     </div>
   );
 }
-function ExpandedFieldModal({ title, hint, initialValue, scope, onSave, onClose }) {
+// Дуже спрощена "AI"-генерація: розпізнає кілька ключових слів в описі й
+// повертає готовий вираз. Ніколи не застосовується напряму — лише як diff
+// (Apply/Discard), як і решта AI-функцій прототипу.
+function generateRuleFromPrompt(prompt, scope) {
+  const p = prompt.toLowerCase();
+  if (p.includes("admin")) return "apiData.profile.is_admin === true";
+  if (p.includes("empty")) return scope === "item" ? "!item.assignee" : "!apiData.profile.department";
+  if (p.includes("close")) return scope === "item" ? "item.status === 'closed'" : "true";
+  if (p.includes("open") || p.includes("status")) return scope === "item" ? "item.status === 'open'" : "true /* \"status\" isn't available outside a Collection */";
+  if (p.includes("priorit")) return scope === "item" ? "item.priority === 1" : "true";
+  return "true // AI couldn't confidently turn this into a rule — refine it manually";
+}
+function ExpandedFieldModal({ title, hint, initialValue, scope, aiEnabled, onSave, onClose }) {
   const [draft, setDraft] = useState(initialValue);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiSuggestion, setAiSuggestion] = useState(null);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
       <div className="bg-white rounded-lg shadow-xl border border-slate-200 flex flex-col" style={{ width: "70vw", height: "70vh" }}>
@@ -864,11 +1077,35 @@ function ExpandedFieldModal({ title, hint, initialValue, scope, onSave, onClose 
           <span className="text-[13px] font-semibold">{title}</span>
           <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={16}/></button>
         </div>
+        {aiEnabled && (
+          <div className="px-4 py-2.5 border-b border-slate-200 bg-violet-50/60 shrink-0">
+            <div className="flex items-center gap-2">
+              <Icon name="sparkles" size={13} className="text-violet-500 shrink-0"/>
+              <input value={aiPrompt} onChange={e => setAiPrompt(e.target.value)}
+                     onKeyDown={e => { if (e.key === "Enter" && aiPrompt.trim()) setAiSuggestion(generateRuleFromPrompt(aiPrompt, scope)); }}
+                     placeholder="Describe the rule, e.g. “show only when status is open”…"
+                     className="flex-1 text-[12px] border border-slate-200 rounded px-2 py-1.5 bg-white"/>
+              <button onClick={() => setAiSuggestion(generateRuleFromPrompt(aiPrompt, scope))} disabled={!aiPrompt.trim()}
+                      className="text-[11px] px-2.5 py-1.5 rounded bg-violet-600 text-white hover:opacity-90 disabled:opacity-40 shrink-0">Generate</button>
+            </div>
+            {aiSuggestion && (
+              <div className="mt-2 border border-violet-200 bg-white rounded p-2">
+                <div className="text-[10px] font-semibold text-slate-400 uppercase mb-1">Suggested code</div>
+                <div className="text-[11px] font-mono bg-emerald-50 border border-emerald-200 text-emerald-700 rounded p-2 mb-2 whitespace-pre-wrap">{aiSuggestion}</div>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setAiSuggestion(null)} className="text-[11px] px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">Discard</button>
+                  <button onClick={() => { setDraft(aiSuggestion); setAiSuggestion(null); setAiPrompt(""); }}
+                          className="text-[11px] px-2 py-1 rounded bg-violet-600 text-white hover:opacity-90">Apply</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex-1 flex overflow-hidden">
           <div className="flex-1 p-3 overflow-hidden flex flex-col">
             {hint && <div className="text-[11px] text-slate-400 mb-1.5">{hint}</div>}
             <div className="flex-1 overflow-hidden">
-              <CodeEditorField value={draft} variant="expanded" onChange={setDraft} onBlur={setDraft}/>
+              <CodeEditorField value={draft} variant="expanded" scope={scope} onChange={setDraft} onBlur={setDraft}/>
             </div>
           </div>
           <div className="w-72 shrink-0 overflow-y-auto p-3 border-l border-slate-200">
@@ -950,7 +1187,7 @@ function InteractionsTab({ node, scope, onCommit }) {
       {confirmState && <ConfirmDialog message={confirmState.message} onConfirm={confirmState.onConfirm} onCancel={() => setConfirmState(null)}/>}
       {expandOpen && (
         <ExpandedFieldModal title='Edit "Hide this block" — code' hint={`Scope: ${scope} — return a boolean expression.`}
-          initialValue={vis.code || ""} scope={scope} onClose={() => setExpandOpen(false)}
+          initialValue={vis.code || ""} scope={scope} aiEnabled onClose={() => setExpandOpen(false)}
           onSave={code => { commit({ visibility: Object.assign({}, vis, { code }) }); setExpandOpen(false); }}/>
       )}
     </div>
@@ -1070,7 +1307,7 @@ function TopBar(props) {
     canUndo, canRedo, onUndo, onRedo,
     tileName, renaming, setRenaming, tileNameInput, setTileNameInput, commitTileName,
     saveStatus, onCycleSave, onRetrySave,
-    mode, setMode, onOpenSettings, onOpenHistory, onPublish
+    mode, setMode, onOpenSettings, onOpenHistory, onOpenShortcuts, onPublish
   } = props;
   const statusMeta = {
     saved: { dot: "bg-emerald-500", text: "Saved", cls: "text-slate-500" },
@@ -1115,6 +1352,9 @@ function TopBar(props) {
         </button>
         <button onClick={onOpenHistory} title="Version history" className="p-1.5 rounded hover:bg-slate-100 text-slate-500">
           <Icon name="history" size={15}/>
+        </button>
+        <button onClick={onOpenShortcuts} title="Keyboard shortcuts (?)" className="p-1.5 rounded hover:bg-slate-100 text-slate-500 text-[12px] font-medium w-7 h-7 flex items-center justify-center">
+          ?
         </button>
         <div className="flex items-center border border-slate-200 rounded-md overflow-hidden text-[12px]">
           <button onClick={() => setMode("desktop")}
@@ -1743,7 +1983,7 @@ function TransformerModal({ transformer, dataSources, blocks, onSave, onClose })
               {source ? `Transforms the output of "${source.name}"` : "No source assigned"} — must return a value from <span className="font-mono">transform({"{ apiData }"})</span>.
             </div>
             <div className="flex-1 p-3 overflow-hidden">
-              <CodeEditorField value={code} variant="expanded" onChange={setCode} onBlur={setCode}/>
+              <CodeEditorField value={code} variant="expanded" scope="apiData" onChange={setCode} onBlur={setCode}/>
             </div>
             <div className="border-t border-slate-200 p-3 overflow-y-auto shrink-0" style={{ maxHeight: "36%" }}>
               <div className="text-[11px] font-semibold text-slate-500 mb-1.5">Output preview</div>
@@ -1802,8 +2042,8 @@ function SamplePayloadModal({ onClose }) {
 /* ============================== КАНВАС ============================== */
 function LeafContent({ node, dataItem }) {
   if (node.type === "Text") {
-    if (node.name === "Header") return <div className="text-[15px] font-semibold text-slate-800">My tickets</div>;
-    if (node.name === "Empty state") return <div className="text-[12px] text-slate-400 italic py-1">No tickets to show</div>;
+    if (node.name === "Header") return <div className="text-[15px] font-semibold text-slate-800">{node.content || "My tickets"}</div>;
+    if (node.name === "Empty state") return <div className="text-[12px] text-slate-400 italic py-1">{node.content || "No tickets to show"}</div>;
     if (node.name === "ID" && dataItem) return <div className="text-[12px] font-mono text-slate-600">{dataItem.id}</div>;
     return <div className="text-[13px] text-slate-700">{node.name}</div>;
   }
@@ -1831,10 +2071,11 @@ function LeafContent({ node, dataItem }) {
   }
   return <div className="text-[12px] text-slate-400 border border-dashed border-slate-300 rounded px-2 py-1">{node.type} · {node.name}</div>;
 }
-function BlockWrapper({ node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, children, dataItem }) {
+function BlockWrapper({ node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, onAiRewrite, onAiLayout, children, dataItem }) {
   const isSelected = selectedId === node.id;
   const isHovered = hoveredId === node.id;
   const isRoot = node.id === "card";
+  const [aiMenuOpen, setAiMenuOpen] = useState(false);
   // У Collection той самий блок-шаблон рендериться для кожного запису:
   // рамку виділення показуємо на всіх екземплярах, а міні-тулбар — лише
   // на першому, щоб не дублювати кнопки дій.
@@ -1842,6 +2083,7 @@ function BlockWrapper({ node, selectedId, hoveredId, setHoveredId, onSelect, onD
   // Per-block Appearance override (Override-кнопка на Appearance-табі) скопійовує
   // --accent тільки в межах цього блока й нащадків — see AppearanceTab.
   const accentOverride = node.appearanceOverrides && node.appearanceOverrides.accentColor;
+  const canRewriteText = node.type === "Text" && (node.name === "Header" || node.name === "Empty state");
   return (
     <div
       style={accentOverride ? { "--accent": accentOverride } : undefined}
@@ -1854,6 +2096,22 @@ function BlockWrapper({ node, selectedId, hoveredId, setHoveredId, onSelect, onD
           <button title="Drag" className="p-1 hover:bg-white/10 rounded cursor-grab"><Icon name="grip" size={13}/></button>
           <button title="Duplicate" onClick={e => { e.stopPropagation(); onDuplicate(node.id); }} className="p-1 hover:bg-white/10 rounded"><Icon name="copy" size={13}/></button>
           <button title="Wrap in container" onClick={e => { e.stopPropagation(); onWrap(node.id); }} className="p-1 hover:bg-white/10 rounded"><Icon name="box" size={13}/></button>
+          <div className="relative">
+            <button title="AI" onClick={e => { e.stopPropagation(); setAiMenuOpen(v => !v); }} className="p-1 hover:bg-white/10 rounded text-violet-300">
+              <Icon name="sparkles" size={13}/>
+            </button>
+            {aiMenuOpen && (
+              <div onMouseLeave={() => setAiMenuOpen(false)}
+                   className="absolute top-full left-0 mt-1 w-40 bg-white text-slate-700 rounded-md shadow-lg border border-slate-200 py-1 z-30">
+                {canRewriteText && (
+                  <button onClick={e => { e.stopPropagation(); setAiMenuOpen(false); onAiRewrite(node.id); }}
+                          className="w-full text-left px-2.5 py-1.5 text-[11px] hover:bg-slate-50">Rewrite text</button>
+                )}
+                <button onClick={e => { e.stopPropagation(); setAiMenuOpen(false); onAiLayout(node.id); }}
+                        className="w-full text-left px-2.5 py-1.5 text-[11px] hover:bg-slate-50">Suggest layout</button>
+              </div>
+            )}
+          </div>
           <button title="Delete" onClick={e => { e.stopPropagation(); onDelete(node.id); }} className="p-1 hover:bg-white/10 rounded text-red-300"><Icon name="trash" size={13}/></button>
         </div>
       )}
@@ -1862,8 +2120,8 @@ function BlockWrapper({ node, selectedId, hoveredId, setHoveredId, onSelect, onD
   );
 }
 function CanvasBlock(props) {
-  const { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, dataItem, scope } = props;
-  const wrapperProps = { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, dataItem };
+  const { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, onAiRewrite, onAiLayout, dataItem, scope } = props;
+  const wrapperProps = { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, onAiRewrite, onAiLayout, dataItem };
   // Правила видимості на канвасі-редакторі не приховують блок повністю (щоб
   // його завжди можна було виділити й відредагувати) — лише притлумлюють,
   // як preview-натяк. Повне застосування правил — у Preview-режимі (фаза 4).
@@ -1953,7 +2211,12 @@ function PropertiesPanel({ selectedNode, scope, tab, setTab, tileTheme, setTileT
         ))}
       </div>
       <div className="flex-1 overflow-y-auto p-3">
-        {tab === "Data" && <div className="text-[12px] text-slate-400">Data tab — буде реалізовано у фазі 3.</div>}
+        {tab === "Data" && (
+          <div className="text-[12px] text-slate-400">
+            Per-block data bindings (e.g. binding an Image's src, a Button's onClick) are out of scope for this prototype —
+            the Data <em>panel</em> (sources, transformers, field picker) is fully built; this per-block Data <em>tab</em> is not.
+          </div>
+        )}
         {tab === "Appearance" && (
           <AppearanceTab node={selectedNode} tileTheme={tileTheme} setTileTheme={setTileTheme}
             onOverride={(key, val) => onCommitBlock(n => ({ appearanceOverrides: Object.assign({}, n.appearanceOverrides, { [key]: val }) }))}/>
@@ -2003,6 +2266,11 @@ function App() {
   const [checkpoints, setCheckpoints] = useState(VERSION_CHECKPOINTS);
   const [checkpointPreview, setCheckpointPreview] = useState(null);
   const [bottomPanel, setBottomPanel] = useState({ open: false, tab: "preview" });
+
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [aiRewriteState, setAiRewriteState] = useState(null);
+  const [aiLayoutState, setAiLayoutState] = useState(null);
+  const clipboardRef = useRef(null);
 
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
@@ -2129,6 +2397,93 @@ function App() {
     showToast("Checkpoint saved");
   }
 
+  function copySelected() {
+    if (!selectedId) return;
+    const info = findNodeAndParent(blocks, selectedId);
+    if (!info) return;
+    clipboardRef.current = deepClone(info.node);
+    showToast(`Copied ${info.node.type} "${info.node.name}"`);
+  }
+  function pasteBlock() {
+    const source = clipboardRef.current;
+    if (!source) return;
+    commitBlocks(prev => {
+      const clone = deepClone(prev);
+      const copy = deepClone(source);
+      reassignIds(copy);
+      const info = selectedId ? findNodeAndParent(clone, selectedId) : null;
+      if (info && info.parent) info.parent.children.splice(info.parent.children.indexOf(info.node) + 1, 0, copy);
+      else if (info && CONTAINER_TYPES.includes(info.node.type)) { info.node.children = info.node.children || []; info.node.children.push(copy); }
+      else { clone.children = clone.children || []; clone.children.push(copy); }
+      return clone;
+    });
+    showToast("Pasted");
+  }
+  function pasteStyleOnly() {
+    const source = clipboardRef.current;
+    if (!source || !selectedId) return;
+    updateBlock(selectedId, { appearanceOverrides: deepClone(source.appearanceOverrides || {}), spacing: deepClone(source.spacing || {}) });
+    showToast("Pasted style only");
+  }
+
+  function openAiRewrite(nodeId) {
+    const info = findNodeAndParent(blocks, nodeId);
+    if (!info) return;
+    const fallback = info.node.name === "Header" ? "My tickets" : "No tickets to show";
+    const current = info.node.content != null ? info.node.content : fallback;
+    const suggestion = AI_TEXT_SUGGESTIONS[info.node.name] || (current + " (rewritten)");
+    setAiRewriteState({ nodeId, oldText: current, newText: suggestion });
+  }
+  function openAiLayout(nodeId) {
+    const info = findNodeAndParent(blocks, nodeId);
+    if (!info) return;
+    setAiLayoutState({ nodeId, description: `Insert a Divider above ${info.node.type} "${info.node.name}" for clearer visual separation.` });
+  }
+  function applyAiRewrite() {
+    updateBlock(aiRewriteState.nodeId, { content: aiRewriteState.newText });
+    setAiRewriteState(null);
+    showToast("Applied AI rewrite");
+  }
+  function applyAiLayout() {
+    commitBlocks(prev => {
+      const clone = deepClone(prev);
+      const info = findNodeAndParent(clone, aiLayoutState.nodeId);
+      if (!info || !info.parent) return prev;
+      info.parent.children.splice(info.parent.children.indexOf(info.node), 0, createBlock("Divider"));
+      return clone;
+    });
+    setAiLayoutState(null);
+    showToast("Applied AI layout suggestion");
+  }
+
+  // Шорткати: undo/redo/copy/paste/paste-style/delete/"?" — вимикаються, коли
+  // фокус у текстовому полі чи CodeMirror, щоб не заважати нативному вводу.
+  React.useEffect(() => {
+    function isEditableTarget(el) {
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (el.isContentEditable) return true;
+      if (el.closest && el.closest(".CodeMirror")) return true;
+      return false;
+    }
+    function handleKeyDown(e) {
+      const editable = isEditableTarget(document.activeElement);
+      const meta = e.metaKey || e.ctrlKey;
+      if (e.key === "Escape") { setShortcutsOpen(false); return; }
+      if (!editable && e.key === "?") { setShortcutsOpen(v => !v); return; }
+      if (editable) return;
+      if (meta && e.altKey && e.key.toLowerCase() === "v") { e.preventDefault(); pasteStyleOnly(); return; }
+      if (meta && e.shiftKey && e.key.toLowerCase() === "z") { e.preventDefault(); redo(); return; }
+      if (meta && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
+      if (meta && e.key.toLowerCase() === "c") { copySelected(); return; }
+      if (meta && e.key.toLowerCase() === "v") { e.preventDefault(); pasteBlock(); return; }
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) { e.preventDefault(); deleteBlock(selectedId); return; }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [blocks, selectedId]);
+
   function commitTileName() {
     setTileName(tileNameInput.trim() || tileName);
     setRenaming(false);
@@ -2156,7 +2511,8 @@ function App() {
         saveStatus={saveStatus} onCycleSave={cycleSaveStatus} onRetrySave={retrySave}
         mode={mode} setMode={setMode}
         onOpenSettings={() => setSettingsOpen(true)} onOpenHistory={() => setHistoryOpen(true)}
-        onPublish={() => showToast("Publish — буде доступно у фазі 4")}
+        onOpenShortcuts={() => setShortcutsOpen(true)}
+        onPublish={() => showToast("Publish is outside this prototype's scope — no backend to publish to")}
       />
 
       <div className="flex-1 flex overflow-hidden min-h-0">
@@ -2201,6 +2557,7 @@ function App() {
                  onClick={e => e.stopPropagation()}>
               <CanvasBlock node={blocks} selectedId={selectedId} hoveredId={hoveredId} setHoveredId={setHoveredId}
                            onSelect={setSelectedId} onDuplicate={duplicateBlock} onDelete={deleteBlock} onWrap={wrapBlock}
+                           onAiRewrite={openAiRewrite} onAiLayout={openAiLayout}
                            dataItem={null} scope="apiData"/>
             </div>
           </div>
@@ -2239,6 +2596,9 @@ function App() {
                            onSave={code => saveTransformer(transformerModalId, code)} onClose={() => setTransformerModalId(null)}/>
       )}
       {sampleViewerOpen && <SamplePayloadModal onClose={() => setSampleViewerOpen(false)}/>}
+      {aiRewriteState && <AiRewriteModal state={aiRewriteState} onApply={applyAiRewrite} onDiscard={() => setAiRewriteState(null)}/>}
+      {aiLayoutState && <AiLayoutModal state={aiLayoutState} onApply={applyAiLayout} onDiscard={() => setAiLayoutState(null)}/>}
+      {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)}/>}
       <Toast message={toast}/>
     </div>
   );
