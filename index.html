@@ -521,20 +521,6 @@ function Toast({ message }) {
     </div>
   );
 }
-function StubDrawer({ title, onClose, children }) {
-  return (
-    <div className="fixed inset-0 z-40 flex justify-end">
-      <div className="flex-1 bg-slate-900/10" onClick={onClose}/>
-      <div className="w-80 bg-white h-full border-l border-slate-200 shadow-lg flex flex-col">
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-200">
-          <span className="text-[13px] font-semibold">{title}</span>
-          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={14}/></button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-3 text-[12px] text-slate-400">{children}</div>
-      </div>
-    </div>
-  );
-}
 function SidePanel({ side, collapsed, onToggle, width, children }) {
   const borderCls = side === "left" ? "border-r" : "border-l";
   if (collapsed) {
@@ -1149,6 +1135,129 @@ function TopBar(props) {
 }
 
 /* ============================== НИЖНІЙ БАР ============================== */
+/* ============================== ІСТОРІЯ ВЕРСІЙ ============================== */
+// Два захардкоджені чекпоінти показують реально різні стани дерева блоків
+// (щоб Restore мав видимий ефект): один — до появи Collection узагалі,
+// другий — до навмисних демо-помилок з фази 2. Кнопка "Save current version"
+// додає третій, зі стану на момент кліку.
+const VERSION_CHECKPOINTS = [
+  {
+    id: "cp-2", label: "Added tickets collection", author: "Olena Kovalenko", time: "Today 14:07",
+    blocks: (function () {
+      const clean = deepClone(INITIAL_BLOCKS);
+      ["badge-status", "progress-sla", "text-id"].forEach(id => {
+        const info = findNodeAndParent(clean, id);
+        if (info) delete info.node.visibility;
+      });
+      return clean;
+    })()
+  },
+  {
+    id: "cp-1", label: "Before AI generation", author: "Olena Kovalenko", time: "Today 14:02",
+    blocks: {
+      id: "card", type: "Container", name: "Card",
+      children: [
+        { id: "text-header-cp1", type: "Text", name: "Header", children: null },
+        { id: "text-empty-cp1", type: "Text", name: "Empty state", children: null }
+      ]
+    }
+  }
+];
+function CheckpointPreviewModal({ checkpoint, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
+      <div className="bg-white rounded-lg shadow-xl border border-slate-200 flex flex-col" style={{ width: 420, maxHeight: "80vh" }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">Preview — "{checkpoint.label}"</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={16}/></button>
+        </div>
+        <div className="flex-1 overflow-auto p-6 flex justify-center bg-slate-100">
+          <div style={{ width: 340 }} className="bg-white border border-slate-200 rounded-lg shrink-0 h-fit">
+            <PreviewBlock node={checkpoint.blocks} dataItem={null} scope="apiData"/>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+function HistoryDrawer({ checkpoints, onClose, onPreview, onRestore, onSaveCurrent }) {
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end">
+      <div className="flex-1 bg-slate-900/10" onClick={onClose}/>
+      <div className="w-96 bg-white h-full border-l border-slate-200 shadow-lg flex flex-col">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">Version history</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={14}/></button>
+        </div>
+        <div className="px-3 py-2 border-b border-slate-200">
+          <button onClick={onSaveCurrent}
+                  className="w-full text-[12px] px-2 py-1.5 rounded border border-dashed border-slate-300 text-slate-500 hover:border-[var(--accent)] hover:text-[var(--accent)] flex items-center justify-center gap-1.5">
+            <Icon name="plus" size={12}/>Save current version as checkpoint
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+          {checkpoints.map(cp => (
+            <div key={cp.id} className="px-3 py-2.5">
+              <div className="text-[12px] text-slate-700">{cp.time} · {cp.author}</div>
+              <div className="text-[12px] text-slate-500 italic mb-1.5">"{cp.label}"</div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => onPreview(cp)} className="text-[11px] px-2 py-1 rounded border border-slate-200 hover:bg-slate-50">Preview</button>
+                <button onClick={() => onRestore(cp)} className="text-[11px] px-2 py-1 rounded bg-[var(--accent)] text-white hover:opacity-90">Restore</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== DRAWER НАЛАШТУВАНЬ ТАЙЛА ============================== */
+function SettingsDrawer({ tileName, onNameChange, settings, onSettingsChange, onClose }) {
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end">
+      <div className="flex-1 bg-slate-900/10" onClick={onClose}/>
+      <div className="w-80 bg-white h-full border-l border-slate-200 shadow-lg flex flex-col">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">Tile settings</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={14}/></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-4">
+          <div>
+            <label className="text-[11px] font-medium text-slate-500 block mb-1">Name</label>
+            <input value={tileName} onChange={e => onNameChange(e.target.value)} className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px]"/>
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-slate-500 block mb-1">Description</label>
+            <textarea value={settings.description} onChange={e => onSettingsChange({ description: e.target.value })} rows={3}
+                      placeholder="What this tile shows and why…" className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px] resize-none"/>
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-slate-500 block mb-1">Permissions</label>
+            <select value={settings.permissions} onChange={e => onSettingsChange({ permissions: e.target.value })}
+                    className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px] bg-white">
+              <option value="everyone">Everyone</option>
+              <option value="admins">Admins only</option>
+              <option value="department">Same department only</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-slate-500 block mb-1">Refresh interval</label>
+            <select value={settings.refreshInterval} onChange={e => onSettingsChange({ refreshInterval: e.target.value })}
+                    className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px] bg-white">
+              <option value="manual">Manual only</option>
+              <option value="5m">Every 5 minutes</option>
+              <option value="15m">Every 15 minutes</option>
+              <option value="1h">Every hour</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== НИЖНІЙ БАР ============================== */
 function BottomBar({ bottomPanel, onToggle }) {
   const btnCls = (tab) => `px-2.5 py-1 rounded text-[12px] flex items-center gap-1.5 ${
     bottomPanel.open && bottomPanel.tab === tab ? "bg-[var(--accent)]/10 text-[var(--accent)]" : "text-slate-500 hover:bg-slate-100"
@@ -1160,16 +1269,109 @@ function BottomBar({ bottomPanel, onToggle }) {
     </div>
   );
 }
-function BottomPanel({ tab, onClose }) {
+/* ============================== PREVIEW: чистий рендер без editor-хрому ==============================
+   На відміну від канваси-редактора, тут блоки з visible=false не рендеряться
+   ВЗАГАЛІ (а не притлумлюються) — це і є "правила видимості реально
+   застосовані", про які просить ТЗ. */
+function PreviewBlock({ node, dataItem, scope }) {
+  const vis = evaluateVisibilityConfig(node.visibility, scope);
+  if (!vis.visible) return null;
+  if (node.type === "Collection") {
+    const records = applyTransform();
+    return (
+      <div className="flex flex-col gap-2 p-2">
+        {records.map(rec => (
+          <Fragment key={rec.id}>
+            {(node.children || []).map(child => <PreviewBlock key={child.id + "-" + rec.id} node={child} dataItem={rec} scope="item"/>)}
+          </Fragment>
+        ))}
+      </div>
+    );
+  }
+  if (CONTAINER_TYPES.includes(node.type)) {
+    const isRow = node.name === "Row";
+    return (
+      <div className={isRow ? "flex items-center gap-3 p-2" : "flex flex-col gap-2 p-2"}>
+        {(node.children || []).map(child => <PreviewBlock key={child.id} node={child} dataItem={dataItem} scope={scope}/>)}
+      </div>
+    );
+  }
+  return <div className="p-1"><LeafContent node={node} dataItem={dataItem}/></div>;
+}
+function PreviewPanelContent({ blocks, mode }) {
+  return (
+    <div className="flex-1 overflow-auto p-6 flex justify-center items-start bg-slate-100">
+      <div style={{ width: mode === "desktop" ? 420 : 340 }} className="bg-white border border-slate-200 rounded-lg shrink-0">
+        <PreviewBlock node={blocks} dataItem={null} scope="apiData"/>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== DEBUG: журнал мок-запитів ============================== */
+const MOCK_REQUESTS = [
+  {
+    id: "req-1", method: "GET", url: "https://api.acme.com/v1/tickets", status: 200, durationMs: 142, sizeKb: 3.1,
+    request: { headers: { Authorization: "Bearer ***", Accept: "application/json" } },
+    response: SAMPLE_PAYLOAD
+  },
+  {
+    id: "req-2", method: "POST", url: "https://api.acme.com/v1/tickets/bulk-update", status: 500, durationMs: 892, sizeKb: 0.4,
+    request: { headers: { "Content-Type": "application/json" }, body: { ids: ["INC-4021"], status: "closed" } },
+    response: { error: "Internal Server Error", message: "Upstream ticketing service timed out" }
+  }
+];
+function DebugRow({ req, isOpen, onToggle }) {
+  const isError = req.status >= 400;
+  return (
+    <div className="border-b border-slate-100">
+      <button onClick={onToggle} className="w-full grid gap-2 px-3 py-1.5 text-[11px] text-left hover:bg-slate-50 items-center"
+              style={{ gridTemplateColumns: "56px 1fr 56px 64px 56px 16px" }}>
+        <span className="font-mono text-slate-500">{req.method}</span>
+        <span className="font-mono text-slate-700 truncate">{req.url}</span>
+        <span className={`font-mono ${isError ? "text-red-600" : "text-emerald-600"}`}>{req.status}</span>
+        <span className="text-slate-400 tabular-nums">{req.durationMs}ms</span>
+        <span className="text-slate-400 tabular-nums">{req.sizeKb}kb</span>
+        <Icon name={isOpen ? "chevronDown" : "chevronRight"} size={12} className="text-slate-400"/>
+      </button>
+      {isOpen && (
+        <div className="grid grid-cols-2 gap-3 px-3 pb-3 bg-slate-50">
+          <div>
+            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Request</div>
+            <pre className="text-[10px] font-mono bg-white border border-slate-200 rounded p-2 overflow-auto whitespace-pre-wrap" style={{ maxHeight: 160 }}>{JSON.stringify(req.request, null, 2)}</pre>
+          </div>
+          <div>
+            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Response</div>
+            <pre className="text-[10px] font-mono bg-white border border-slate-200 rounded p-2 overflow-auto whitespace-pre-wrap" style={{ maxHeight: 160 }}>{JSON.stringify(req.response, null, 2)}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function DebugPanelContent() {
+  const [openId, setOpenId] = useState(MOCK_REQUESTS[0].id);
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="grid gap-2 px-3 py-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wide border-b border-slate-200 sticky top-0 bg-white"
+           style={{ gridTemplateColumns: "56px 1fr 56px 64px 56px 16px" }}>
+        <span>Method</span><span>URL</span><span>Status</span><span>Time</span><span>Size</span><span/>
+      </div>
+      {MOCK_REQUESTS.map(req => (
+        <DebugRow key={req.id} req={req} isOpen={openId === req.id} onToggle={() => setOpenId(id => (id === req.id ? null : req.id))}/>
+      ))}
+    </div>
+  );
+}
+
+function BottomPanel({ tab, blocks, mode, onClose }) {
   return (
     <div className="border-t border-slate-200 bg-white flex flex-col" style={{ height: "40%" }}>
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-200">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-200 shrink-0">
         <span className="text-[12px] font-medium capitalize text-slate-600">{tab}</span>
         <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-400"><Icon name="x" size={13}/></button>
       </div>
-      <div className="flex-1 flex items-center justify-center text-[12px] text-slate-400">
-        {tab === "preview" ? "Preview panel — буде реалізовано у фазі 4" : "Debug panel — буде реалізовано у фазі 4"}
-      </div>
+      {tab === "preview" ? <PreviewPanelContent blocks={blocks} mode={mode}/> : <DebugPanelContent/>}
     </div>
   );
 }
@@ -1797,6 +1999,9 @@ function App() {
   const [mode, setMode] = useState("desktop");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [tileSettings, setTileSettings] = useState({ description: "", permissions: "everyone", refreshInterval: "manual" });
+  const [checkpoints, setCheckpoints] = useState(VERSION_CHECKPOINTS);
+  const [checkpointPreview, setCheckpointPreview] = useState(null);
   const [bottomPanel, setBottomPanel] = useState({ open: false, tab: "preview" });
 
   const [toast, setToast] = useState(null);
@@ -1912,6 +2117,17 @@ function App() {
     setTransformers(prev => prev.map(t => (t.id === id ? Object.assign({}, t, { code }) : t)));
     setTransformerModalId(null);
   }
+  function restoreCheckpoint(cp) {
+    commitBlocks(() => deepClone(cp.blocks));
+    setSelectedId(null);
+    setHistoryOpen(false);
+    showToast(`Restored to "${cp.label}"`);
+  }
+  function saveCheckpointNow() {
+    const time = "Today " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    setCheckpoints(cps => [{ id: genId("cp"), label: "Manual save", author: "Olena Kovalenko", time, blocks: deepClone(blocks) }].concat(cps));
+    showToast("Checkpoint saved");
+  }
 
   function commitTileName() {
     setTileName(tileNameInput.trim() || tileName);
@@ -1998,20 +2214,22 @@ function App() {
         </SidePanel>
       </div>
 
-      {bottomPanel.open && <BottomPanel tab={bottomPanel.tab} onClose={() => setBottomPanel(p => ({ ...p, open: false }))}/>}
+      {bottomPanel.open && (
+        <BottomPanel tab={bottomPanel.tab} blocks={blocks} mode={mode} onClose={() => setBottomPanel(p => ({ ...p, open: false }))}/>
+      )}
       <BottomBar bottomPanel={bottomPanel}
                  onToggle={tab => setBottomPanel(p => (p.open && p.tab === tab ? { open: false, tab } : { open: true, tab }))}/>
 
       {settingsOpen && (
-        <StubDrawer title="Tile settings" onClose={() => setSettingsOpen(false)}>
-          Name, description, permissions, refresh interval — буде реалізовано у фазі 4.
-        </StubDrawer>
+        <SettingsDrawer tileName={tileName} onNameChange={setTileName}
+                         settings={tileSettings} onSettingsChange={patch => setTileSettings(s => Object.assign({}, s, patch))}
+                         onClose={() => setSettingsOpen(false)}/>
       )}
       {historyOpen && (
-        <StubDrawer title="Version history" onClose={() => setHistoryOpen(false)}>
-          Список чекпоінтів із Preview / Restore — буде реалізовано у фазі 4.
-        </StubDrawer>
+        <HistoryDrawer checkpoints={checkpoints} onClose={() => setHistoryOpen(false)}
+                        onPreview={cp => setCheckpointPreview(cp)} onRestore={restoreCheckpoint} onSaveCurrent={saveCheckpointNow}/>
       )}
+      {checkpointPreview && <CheckpointPreviewModal checkpoint={checkpointPreview} onClose={() => setCheckpointPreview(null)}/>}
       {apiActionModal && (
         <ApiActionModal source={apiActionModal.source} isNew={apiActionModal.isNew}
                          onSave={saveApiAction} onClose={() => setApiActionModal(null)}/>
