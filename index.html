@@ -33,6 +33,13 @@
     background-size: 400px 100%;
     animation: shimmer 1.4s ease-in-out infinite;
   }
+
+  /* Код-редактор (CodeMirror 5) — дві форми: inline (одна строка, без gutter)
+     і expanded (повноцінний редактор з номерами рядків). */
+  .cm-inline .CodeMirror { height: 34px; font-size: 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; }
+  .cm-inline .CodeMirror-lines { padding: 0; }
+  .cm-inline .CodeMirror-vscrollbar, .cm-inline .CodeMirror-hscrollbar { display: none !important; }
+  .cm-expanded .CodeMirror { height: 100%; font-size: 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 </style>
 </head>
 <body>
@@ -77,6 +84,8 @@ const ICON_PATHS = {
   divider: <line x1="3" y1="12" x2="21" y2="12"/>,
   badgeIcon: <rect x="4" y="8" width="16" height="8" rx="4"/>,
   x: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
+  eyeOff: <><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61C3.36 8.5 1 12 1 12s4 7 11 7a9.26 9.26 0 0 0 5.39-1.61"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></>,
+  maximize2: <><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></>,
 };
 function Icon({ name, size = 16, className = "" }) {
   return (
@@ -108,9 +117,14 @@ const SAMPLE_PAYLOAD = {
 // Поки що навмисно НЕ додаємо його до автокомпліту / field picker (буде у фазі 5+).
 
 /* ============================== МОДЕЛЬ БЛОКІВ ==============================
-   Дерево блоків тайла. Для наочності демо-багу навмисно захардкоджено
-   Badge "Status" з правилом видимості, що посилається на неіснуюче поле
-   "staus" (буде показано і виправлено у фазі 2). */
+   Дерево блоків тайла. Три блоки навмисно постачаються з готовими сценаріями
+   для трьох рівнів помилок системи видимості (фаза 2):
+   - Badge "Status": Code-режим із друкарською помилкою в назві поля
+     ("staus" замість "status") → червоне підкреслення + інлайн-повідомлення.
+   - Progress "SLA": Rule-режим, що порівнює числове поле "priority" з
+     рядком "high" → жовте попередження про невідповідність типів.
+   - Text "ID": Code-режим із реальною помилкою виконання (typo в назві
+     методу) → червоний банер "Rule failed — block shown by default". */
 const INITIAL_BLOCKS = {
   id: "card", type: "Container", name: "Card",
   children: [
@@ -122,16 +136,18 @@ const INITIAL_BLOCKS = {
         {
           id: "container-row", type: "Container", name: "Row",
           children: [
-            { id: "text-id", type: "Text", name: "ID", children: null },
+            {
+              id: "text-id", type: "Text", name: "ID", children: null,
+              visibility: { mode: "code", toggleValue: "visible", conditions: null, match: "all", code: "item.summary.toUppercase()" }
+            },
             {
               id: "badge-status", type: "Badge", name: "Status", children: null,
-              visibility: {
-                kind: "rule",
-                text: "item.staus == 'open'",
-                error: 'No field "staus" on item. Did you mean "status"?'
-              }
+              visibility: { mode: "code", toggleValue: "visible", conditions: null, match: "all", code: "item.staus == 'open'" }
             },
-            { id: "progress-sla", type: "Progress", name: "SLA", children: null }
+            {
+              id: "progress-sla", type: "Progress", name: "SLA", children: null,
+              visibility: { mode: "rule", toggleValue: "visible", conditions: [{ field: "item.priority", operator: "is", value: "high" }], match: "all", code: "" }
+            }
           ]
         }
       ]
@@ -182,12 +198,20 @@ function getPathTo(root, id, trail) {
   }
   return null;
 }
-function flattenTree(node, depth, collapsedSet, out) {
-  out.push({ node, depth });
+function flattenTree(node, depth, collapsedSet, out, scope) {
+  out.push({ node, depth, scope: scope || "apiData" });
+  const childScope = node.type === "Collection" ? "item" : (scope || "apiData");
   if (node.children && !collapsedSet.has(node.id)) {
-    node.children.forEach(c => flattenTree(c, depth + 1, collapsedSet, out));
+    node.children.forEach(c => flattenTree(c, depth + 1, collapsedSet, out, childScope));
   }
   return out;
+}
+// Обчислює scope блока (apiData / item), не проходячи по всьому дереву вручну —
+// той самий "усередині Collection = item" принцип, що й breadcrumb.
+function getScopeForId(blocks, id) {
+  const path = getPathTo(blocks, id, []);
+  if (!path) return "apiData";
+  return path.slice(0, -1).some(n => n.type === "Collection") ? "item" : "apiData";
 }
 // Фільтрує тікети, чий source_reference_number починається з "INC" — це
 // той самий трансформер "filterINC", який редагується у фазі 3.
@@ -195,6 +219,277 @@ function applyTransform() {
   return SAMPLE_PAYLOAD.tickets
     .filter(t => t.source_reference_number.startsWith("INC"))
     .map((r, i) => Object.assign({}, r, { __rowIndex: i }));
+}
+
+/* ============================== СХЕМА ДАНИХ + ДВИЖОК ПРАВИЛ ВИДИМОСТІ ==============================
+   Легка, захардкоджена під SAMPLE_PAYLOAD "схема" — достатньо для валідації
+   шляхів (item.status, apiData.profile.name, …), підказок типу поля для
+   перевірки на невідповідність типів і для field picker. Це навмисно НЕ
+   повноцінний JSON Schema рушій — для прототипу з фіксованим мок-payload
+   цього достатньо. */
+const ITEM_SCHEMA = { id: "string", summary: "string", status: "string", priority: "number", sla_percent: "number", assignee: "string", source_reference_number: "string" };
+const APIDATA_SCHEMA = {
+  profile: { name: "string", email: "string", license_type: "string", is_admin: "boolean", department: "string" },
+  tickets: "array",
+  meta: { total: "number", fetched_at: "string" }
+};
+// Представницький запис для live-оцінки правил у Properties-панелі —
+// перший рядок колекції після трансформера (INC-4021, status: open).
+const SAMPLE_ITEM = applyTransform()[0];
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const d = [];
+  for (let i = 0; i <= m; i++) { d.push([i]); }
+  for (let j = 1; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      d[i][j] = a[i - 1] === b[j - 1] ? d[i - 1][j - 1] : 1 + Math.min(d[i - 1][j - 1], d[i - 1][j], d[i][j - 1]);
+    }
+  }
+  return d[m][n];
+}
+function closestKey(key, candidates) {
+  let best = null, bestDist = Infinity;
+  candidates.forEach(c => { const dist = levenshtein(key, c); if (dist < bestDist) { bestDist = dist; best = c; } });
+  return bestDist <= 2 ? best : null;
+}
+// Перевіряє шлях типу "item.status" чи "apiData.profile.name" проти схеми.
+// null = валідний шлях; інакше { message, suggestion, fixPath, path }.
+function checkFieldPath(path, scope) {
+  if (!path) return null;
+  const parts = path.split(".");
+  const rootName = parts[0];
+  if (rootName === "item") {
+    if (scope !== "item") {
+      return { message: `"item" is not available here — this block is outside a Collection (scope: ${scope}).`, suggestion: null, fixPath: null, path };
+    }
+    const key = parts[1];
+    if (!key) return null;
+    if (!(key in ITEM_SCHEMA)) {
+      const suggestion = closestKey(key, Object.keys(ITEM_SCHEMA));
+      return {
+        message: `No field "${key}" on item.` + (suggestion ? ` Did you mean "${suggestion}"?` : ""),
+        suggestion, fixPath: suggestion ? "item." + suggestion : null, path
+      };
+    }
+    return null;
+  }
+  if (rootName === "apiData") {
+    let node = APIDATA_SCHEMA;
+    for (let i = 1; i < parts.length; i++) {
+      const key = parts[i];
+      if (typeof node !== "object" || node === null || !(key in node)) {
+        const candidates = (typeof node === "object" && node) ? Object.keys(node) : [];
+        const suggestion = closestKey(key, candidates);
+        return {
+          message: `No field "${key}" on ${parts.slice(0, i).join(".")}.` + (suggestion ? ` Did you mean "${suggestion}"?` : ""),
+          suggestion, fixPath: suggestion ? parts.slice(0, i).concat([suggestion]).join(".") : null, path
+        };
+      }
+      node = node[key];
+    }
+    return null;
+  }
+  return { message: `Unknown root "${rootName}". Use "item" or "apiData".`, suggestion: null, fixPath: null, path };
+}
+function fieldType(path, scope) {
+  if (!path || checkFieldPath(path, scope)) return null;
+  const parts = path.split(".");
+  if (parts[0] === "item") return ITEM_SCHEMA[parts[1]] || null;
+  let node = APIDATA_SCHEMA;
+  for (let i = 1; i < parts.length; i++) node = node[parts[i]];
+  return typeof node === "string" ? node : "object";
+}
+function resolveValue(path, ctx) {
+  const parts = path.split(".");
+  let cur = parts[0] === "item" ? ctx.item : ctx.apiData;
+  for (let i = 1; i < parts.length; i++) { if (cur == null) return undefined; cur = cur[parts[i]]; }
+  return cur;
+}
+function compareValues(left, operator, rawValue, type) {
+  if (operator === "is empty") return left === null || left === undefined || left === "";
+  if (operator === "is not empty") return !(left === null || left === undefined || left === "");
+  let right = rawValue;
+  if (type === "number") right = Number(rawValue);
+  if (type === "boolean") right = rawValue === "true";
+  switch (operator) {
+    case "is": return left === right || (type === "number" && Number(left) === Number(right));
+    case "is not": return !(left === right);
+    case "contains": return String(left == null ? "" : left).toLowerCase().includes(String(rawValue).toLowerCase());
+    case ">": return Number(left) > Number(right);
+    case "<": return Number(left) < Number(right);
+    default: return false;
+  }
+}
+const OPERATORS_BY_TYPE = {
+  string: ["is", "is not", "contains", "is empty", "is not empty"],
+  number: ["is", "is not", ">", "<", "is empty", "is not empty"],
+  boolean: ["is", "is not"],
+  object: ["is empty", "is not empty"],
+  array: ["is empty", "is not empty"]
+};
+function emptyCondition() { return { field: "", operator: "is", value: "" }; }
+function defaultVisibility() { return { mode: "toggle", toggleValue: "visible", conditions: [emptyCondition()], match: "all", code: "" }; }
+// Перевіряє одну структуровану умову на порівняння різних типів (число ↔ рядок).
+function analyzeCondition(cond, scope) {
+  const warnings = [];
+  if (!cond.field || cond.operator === "is empty" || cond.operator === "is not empty") return { warnings };
+  const ft = fieldType(cond.field, scope);
+  if (ft === "number" && cond.value.trim() !== "" && isNaN(Number(cond.value))) {
+    warnings.push("Comparing string to number — this may never match.");
+  }
+  return { warnings };
+}
+// Скан однорядкового JS-виразу (Code-режим) на прості порівняння "path OP literal",
+// щоб дати ті самі два статичні попередження (typo / type mismatch) без повного парсера.
+const CMP_RE = /([a-zA-Z_$][\w.$]*)\s*(===|!==|==|!=|>=|<=|>|<)\s*('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?\b|true\b|false\b|null\b)/g;
+function literalKind(raw) {
+  if (raw === "true" || raw === "false") return "boolean";
+  if (raw === "null") return "null";
+  if (/^['"]/.test(raw)) return "string";
+  return "number";
+}
+function analyzeCode(code, scope) {
+  const errors = [], warnings = [];
+  if (!code) return { errors, warnings };
+  let m;
+  CMP_RE.lastIndex = 0;
+  while ((m = CMP_RE.exec(code))) {
+    const path = m[1];
+    if (path !== "item" && path !== "apiData" && !/^(item|apiData)\./.test(path)) continue;
+    const fieldErr = checkFieldPath(path, scope);
+    if (fieldErr) { errors.push(fieldErr); continue; }
+    const ft = fieldType(path, scope);
+    const lk = literalKind(m[3]);
+    if (ft === "number" && lk === "string") {
+      warnings.push({ message: "Comparing string to number — this may never match.", path });
+    }
+  }
+  return { errors, warnings };
+}
+// Формує human-readable опис правила для тултипів у дереві шарів.
+function describeVisibility(vis) {
+  if (!vis || vis.mode === "toggle") return (vis && vis.toggleValue === "hidden") ? "Always hidden" : "Always visible";
+  if (vis.mode === "code") return vis.code && vis.code.trim() ? vis.code : "(empty code)";
+  if (vis.mode === "rule") {
+    const conds = (vis.conditions || []).filter(c => c.field);
+    if (!conds.length) return "(no conditions)";
+    return conds.map(c => `${c.field} ${c.operator} ${c.value}`.trim()).join(vis.match === "any" ? " OR " : " AND ");
+  }
+  return "";
+}
+// Реальна live-оцінка "чи видимий блок" проти SAMPLE_ITEM / SAMPLE_PAYLOAD.
+// Рантайм-помилки (throw) завжди падають безпечно: visible=true ("shown by default").
+function evaluateVisibilityConfig(vis, scope) {
+  const ctx = { item: SAMPLE_ITEM, apiData: SAMPLE_PAYLOAD };
+  if (!vis || vis.mode === "toggle") return { visible: !vis || vis.toggleValue !== "hidden", runtimeError: null };
+  if (vis.mode === "code") {
+    if (!vis.code || !vis.code.trim()) return { visible: true, runtimeError: null };
+    try {
+      // OPEN QUESTION: рантайм-код правил виконується без пісочниці (new Function) —
+      // прийнятно для прототипу, де код повністю контролюється самим дизайнером.
+      const fn = new Function("item", "apiData", "return (" + vis.code + ");");
+      return { visible: !!fn(ctx.item, ctx.apiData), runtimeError: null };
+    } catch (e) {
+      return { visible: true, runtimeError: e.message };
+    }
+  }
+  if (vis.mode === "rule") {
+    const conds = (vis.conditions || []).filter(c => c.field);
+    if (!conds.length) return { visible: true, runtimeError: null };
+    try {
+      let acc = null;
+      conds.forEach((c, i) => {
+        const fieldErr = checkFieldPath(c.field, scope);
+        if (fieldErr) throw new Error(fieldErr.message);
+        const left = resolveValue(c.field, ctx);
+        const result = compareValues(left, c.operator, c.value, fieldType(c.field, scope));
+        acc = i === 0 ? result : (vis.match === "any" ? (acc || result) : (acc && result));
+      });
+      return { visible: !!acc, runtimeError: null };
+    } catch (e) {
+      return { visible: true, runtimeError: e.message };
+    }
+  }
+  return { visible: true, runtimeError: null };
+}
+// Зведена інформація для бейджів дерева шарів (eye / fx / трикутник) — єдине джерело
+// правди, яке також використовує сама Properties-панель.
+function getVisibilityAudit(node, scope) {
+  const vis = node.visibility || defaultVisibility();
+  const hasVisibility = vis.mode !== "toggle" || vis.toggleValue === "hidden";
+  let errorMessage = null, warningMessage = null;
+  if (vis.mode === "code") {
+    const { errors, warnings } = analyzeCode(vis.code, scope);
+    if (errors[0]) errorMessage = errors[0].message;
+    if (warnings[0]) warningMessage = warnings[0].message;
+  } else if (vis.mode === "rule") {
+    (vis.conditions || []).forEach(c => {
+      if (!c.field) return;
+      const fieldErr = checkFieldPath(c.field, scope);
+      if (fieldErr && !errorMessage) errorMessage = fieldErr.message;
+      const w = analyzeCondition(c, scope);
+      if (w.warnings[0] && !warningMessage) warningMessage = w.warnings[0];
+    });
+  }
+  return { hasVisibility, errorMessage, warningMessage, description: describeVisibility(vis) };
+}
+// Rule → Code: автоматично генерує JS-вираз з умов (застосовується при перемиканні режиму).
+function formatValueForCode(value, type) {
+  // Якщо значення не парситься як число (класична причина "порівнюю рядок
+  // із числом"), навмисно залишаємо його рядковим літералом у згенерованому
+  // коді — інакше отримали б безглузде "item.priority === NaN" і статичний
+  // аналізатор коду більше не побачив би невідповідність типів.
+  if (type === "number") return isNaN(Number(value)) ? JSON.stringify(value) : String(Number(value));
+  if (type === "boolean") return value === "true" ? "true" : "false";
+  return JSON.stringify(value);
+}
+function conditionsToCode(conditions, match, scope) {
+  const conds = (conditions || []).filter(c => c.field);
+  if (!conds.length) return "true";
+  const parts = conds.map(c => {
+    if (c.operator === "is empty") return `!${c.field}`;
+    if (c.operator === "is not empty") return `!!${c.field}`;
+    if (c.operator === "contains") return `String(${c.field}).includes(${JSON.stringify(c.value)})`;
+    const op = c.operator === "is" ? "===" : c.operator === "is not" ? "!==" : c.operator;
+    return `${c.field} ${op} ${formatValueForCode(c.value, fieldType(c.field, scope))}`;
+  });
+  return parts.join(match === "any" ? " || " : " && ");
+}
+const RULE_TEMPLATES = [
+  { label: "Show only to admins", build: () => [{ field: "apiData.profile.is_admin", operator: "is", value: "true" }] },
+  { label: "Hide if empty", build: (scope) => [{ field: scope === "item" ? "item.assignee" : "apiData.profile.department", operator: "is not empty", value: "" }] },
+  { label: "Show only when status is open", build: () => [{ field: "item.status", operator: "is", value: "open" }] }
+];
+function formatFieldValue(v) {
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "string") return `"${v}"`;
+  return String(v);
+}
+function buildFieldTree(scope) {
+  const groups = [];
+  if (scope === "item") {
+    groups.push({
+      key: "item", label: "item",
+      children: Object.keys(ITEM_SCHEMA).map(k => ({ key: "item." + k, label: k, type: ITEM_SCHEMA[k], value: SAMPLE_ITEM[k], children: null }))
+    });
+  }
+  groups.push({
+    key: "apiData", label: "apiData",
+    children: [
+      {
+        key: "apiData.profile", label: "profile", type: "object", value: null,
+        children: Object.keys(APIDATA_SCHEMA.profile).map(k => ({ key: "apiData.profile." + k, label: k, type: APIDATA_SCHEMA.profile[k], value: SAMPLE_PAYLOAD.profile[k], children: null }))
+      },
+      { key: "apiData.tickets", label: "tickets", type: "array[" + SAMPLE_PAYLOAD.tickets.length + "]", value: undefined, children: null },
+      {
+        key: "apiData.meta", label: "meta", type: "object", value: null,
+        children: Object.keys(APIDATA_SCHEMA.meta).map(k => ({ key: "apiData.meta." + k, label: k, type: APIDATA_SCHEMA.meta[k], value: SAMPLE_PAYLOAD.meta[k], children: null }))
+      }
+    ]
+  });
+  return groups;
 }
 
 /* ============================== ДРІБНІ UI-ЕЛЕМЕНТИ ============================== */
@@ -247,6 +542,526 @@ function SidePanel({ side, collapsed, onToggle, width, children }) {
         </button>
       </div>
       {children}
+    </div>
+  );
+}
+
+/* ============================== FIELD PICKER ==============================
+   Дерево ключів payload з пошуком; праворуч від кожного ключа — його реальне
+   значення (сірим) і тип. Клік вставляє шлях у активне поле. Використовується
+   і в Rule-конструкторі, і в expanded код-редакторі. */
+function FieldTreeNode({ node, search, onPick, depth }) {
+  if (node.children) {
+    const visibleChildren = node.children.filter(c => !search || c.label.toLowerCase().includes(search));
+    if (search && !visibleChildren.length) return null;
+    return (
+      <div>
+        <div className="text-[10px] text-slate-400 px-1 py-0.5" style={{ paddingLeft: 8 + depth * 10 }}>{node.label}</div>
+        {(search ? visibleChildren : node.children).map(c => (
+          <FieldTreeNode key={c.key} node={c} search={search} onPick={onPick} depth={depth + 1}/>
+        ))}
+      </div>
+    );
+  }
+  if (search && !node.label.toLowerCase().includes(search)) return null;
+  return (
+    <button type="button" onClick={() => onPick(node.key)} style={{ paddingLeft: 8 + depth * 10 }}
+            className="w-full flex items-center justify-between gap-2 px-1 py-1 rounded hover:bg-[var(--accent)]/10 text-left">
+      <span className="text-[11px] font-mono text-slate-700 truncate">{node.label}</span>
+      <span className="flex items-center gap-1 shrink-0">
+        {node.value !== undefined && <span className="text-[10px] text-slate-400 truncate max-w-[90px]">{formatFieldValue(node.value)}</span>}
+        <span className="text-[9px] px-1 rounded bg-slate-100 text-slate-400">{node.type}</span>
+      </span>
+    </button>
+  );
+}
+function FieldTree({ scope, onPick }) {
+  const [search, setSearch] = useState("");
+  const groups = buildFieldTree(scope);
+  const q = search.trim().toLowerCase();
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded px-2 py-1 mb-2">
+        <Icon name="search" size={12} className="text-slate-400"/>
+        <input autoFocus value={search} onChange={e => setSearch(e.target.value)} placeholder="Search fields"
+               className="flex-1 text-[11px] outline-none bg-transparent"/>
+      </div>
+      <div className="space-y-2">
+        {groups.map(g => (
+          <div key={g.key}>
+            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-0.5">{g.label}</div>
+            {g.children.map(c => <FieldTreeNode key={c.key} node={c} search={q} onPick={onPick} depth={0}/>)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+function FieldPicker({ scope, onPick, onClose }) {
+  // Панель властивостей вузька (320px), тож попап навмисно ширший за поле, що
+  // його відкриває, і трохи виходить за межі панелі в бік канвасу — це
+  // безпечно (нижче лежить лише порожній канвас-фон), головне не обрізати
+  // сам вміст попапу.
+  return (
+    <div className="absolute z-30 top-full left-0 mt-1 w-72 max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-md shadow-lg p-2"
+         onMouseLeave={onClose}>
+      <FieldTree scope={scope} onPick={onPick}/>
+    </div>
+  );
+}
+
+/* ============================== КОД-РЕДАКТОР ==============================
+   Один компонент, дві форми: inline (36px, один рядок) і expanded (номери
+   рядків, перенос рядків). CodeMirror 5, якщо доступний — інакше textarea. */
+const HAS_CODEMIRROR = typeof CodeMirror !== "undefined";
+function CodeEditorField({ value, onChange, onBlur, variant }) {
+  const hostRef = useRef(null);
+  const cmRef = useRef(null);
+  const onChangeRef = useRef(onChange);
+  const onBlurRef = useRef(onBlur);
+  onChangeRef.current = onChange;
+  onBlurRef.current = onBlur;
+
+  React.useEffect(() => {
+    if (!HAS_CODEMIRROR || !hostRef.current) return;
+    const cm = CodeMirror(hostRef.current, {
+      value: value || "",
+      mode: "javascript",
+      lineNumbers: variant === "expanded",
+      lineWrapping: variant === "expanded",
+      viewportMargin: variant === "inline" ? Infinity : 50,
+      scrollbarStyle: variant === "inline" ? "null" : "native"
+    });
+    cmRef.current = cm;
+    if (variant === "inline") {
+      cm.setOption("extraKeys", { Enter: () => {}, Tab: () => {} });
+    }
+    cm.on("change", instance => { onChangeRef.current && onChangeRef.current(instance.getValue()); });
+    cm.on("blur", instance => { onBlurRef.current && onBlurRef.current(instance.getValue()); });
+    return () => { cmRef.current = null; if (hostRef.current) hostRef.current.innerHTML = ""; };
+    // eslint-disable-next-line
+  }, []);
+
+  React.useEffect(() => {
+    if (cmRef.current && cmRef.current.getValue() !== (value || "")) {
+      const cursor = cmRef.current.getCursor();
+      cmRef.current.setValue(value || "");
+      cmRef.current.setCursor(cursor);
+    }
+  }, [value]);
+
+  if (!HAS_CODEMIRROR) {
+    return variant === "inline" ? (
+      <textarea rows={1} value={value || ""} onChange={e => onChange(e.target.value)} onBlur={e => onBlur && onBlur(e.target.value)}
+                className="w-full font-mono text-[12px] border border-slate-200 rounded px-2 py-1.5 resize-none" style={{ height: 34 }}/>
+    ) : (
+      <textarea value={value || ""} onChange={e => onChange(e.target.value)} onBlur={e => onBlur && onBlur(e.target.value)}
+                className="w-full h-full font-mono text-[12px] border border-slate-200 rounded p-2 resize-none"/>
+    );
+  }
+  return <div ref={hostRef} className={variant === "inline" ? "cm-inline" : "cm-expanded h-full border border-slate-200 rounded overflow-hidden"}/>;
+}
+
+/* ============================== HIDE THIS BLOCK ============================== */
+function VisibilitySegmented({ mode, onChange }) {
+  const modes = [["toggle", "Toggle"], ["rule", "Rule"], ["code", "Code"]];
+  return (
+    <div className="flex border border-slate-200 rounded-md overflow-hidden text-[12px]">
+      {modes.map(([val, label], i) => (
+        <button key={val} onClick={() => onChange(val)}
+                className={`flex-1 px-2 py-1.5 ${i > 0 ? "border-l border-slate-200" : ""} ${mode === val ? "bg-[var(--accent)] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+function ToggleModeBlock({ vis, onChange }) {
+  const hidden = vis.toggleValue === "hidden";
+  return (
+    <div className="flex items-center justify-between border border-slate-200 rounded px-3 py-2">
+      <span className="text-[12px] text-slate-600">{hidden ? "Always hidden" : "Always visible"}</span>
+      <button onClick={() => onChange(Object.assign({}, vis, { toggleValue: hidden ? "visible" : "hidden" }))}
+              className={`w-9 h-5 rounded-full relative shrink-0 ${hidden ? "bg-slate-300" : "bg-[var(--accent)]"}`}>
+        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full ${hidden ? "left-0.5" : "left-4"}`}/>
+      </button>
+    </div>
+  );
+}
+function ConditionRow({ cond, isFirst, match, scope, onChangeField, onChangeOperator, onChangeValue, onRemove }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const type = cond.field ? (fieldType(cond.field, scope) || "string") : "string";
+  const ops = OPERATORS_BY_TYPE[type] || OPERATORS_BY_TYPE.string;
+  const needsValue = cond.operator !== "is empty" && cond.operator !== "is not empty";
+  const warnings = analyzeCondition(cond, scope).warnings;
+  const fieldErr = cond.field ? checkFieldPath(cond.field, scope) : null;
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 relative">
+        <span className="w-7 shrink-0 text-[10px] font-medium text-slate-400 text-center">{isFirst ? "" : (match === "any" ? "OR" : "AND")}</span>
+        <div className="relative flex-1 min-w-0">
+          <button type="button" onClick={() => setPickerOpen(v => !v)}
+                  className={`w-full text-left border rounded px-1.5 py-1 text-[12px] font-mono truncate bg-white hover:border-[var(--accent)] ${fieldErr ? "border-red-300" : "border-slate-200"}`}>
+            {cond.field || <span className="text-slate-400 font-sans">Pick a field…</span>}
+          </button>
+          {pickerOpen && <FieldPicker scope={scope} onPick={p => { onChangeField(p); setPickerOpen(false); }} onClose={() => setPickerOpen(false)}/>}
+        </div>
+        <select value={cond.operator} onChange={e => onChangeOperator(e.target.value)}
+                className="border border-slate-200 rounded px-1 py-1 text-[12px] bg-white shrink-0">
+          {ops.map(op => <option key={op} value={op}>{op}</option>)}
+        </select>
+        {needsValue && (
+          type === "boolean" ? (
+            <select value={cond.value} onChange={e => onChangeValue(e.target.value)} className="border border-slate-200 rounded px-1 py-1 text-[12px] w-16 bg-white shrink-0">
+              <option value="true">true</option><option value="false">false</option>
+            </select>
+          ) : (
+            <input value={cond.value} onChange={e => onChangeValue(e.target.value)}
+                   className="border border-slate-200 rounded px-1.5 py-1 text-[12px] w-16 shrink-0"/>
+          )
+        )}
+        <button onClick={onRemove} className="text-slate-300 hover:text-red-500 p-0.5 shrink-0"><Icon name="x" size={12}/></button>
+      </div>
+      {fieldErr && (
+        <div className="text-[10px] text-red-600 flex items-start gap-1 mt-0.5 pl-9">
+          <Icon name="triangleAlert" size={10} className="mt-0.5 shrink-0"/>
+          <span>{fieldErr.message}
+            {fieldErr.fixPath && <button onClick={() => onChangeField(fieldErr.fixPath)} className="ml-1 underline hover:no-underline">Fix it</button>}
+          </span>
+        </div>
+      )}
+      {!fieldErr && warnings.map((w, i) => (
+        <div key={i} className="text-[10px] text-amber-600 flex items-center gap-1 mt-0.5 pl-9"><Icon name="triangleAlert" size={10}/>{w}</div>
+      ))}
+    </div>
+  );
+}
+function RuleBuilder({ vis, scope, onChange }) {
+  const conditions = vis.conditions && vis.conditions.length ? vis.conditions : [emptyCondition()];
+  function updateCond(idx, patch) {
+    const next = conditions.slice();
+    next[idx] = Object.assign({}, next[idx], patch);
+    onChange(Object.assign({}, vis, { conditions: next }));
+  }
+  function addCond() { onChange(Object.assign({}, vis, { conditions: conditions.concat([emptyCondition()]) })); }
+  function removeCond(idx) {
+    const next = conditions.slice();
+    next.splice(idx, 1);
+    onChange(Object.assign({}, vis, { conditions: next.length ? next : [emptyCondition()] }));
+  }
+  return (
+    <div className="space-y-2">
+      <select defaultValue="" onChange={e => { const tpl = RULE_TEMPLATES.find(t => t.label === e.target.value); if (tpl) onChange(Object.assign({}, vis, { conditions: tpl.build(scope) })); e.target.value = ""; }}
+              className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px] text-slate-500 bg-white">
+        <option value="">Start from a template…</option>
+        {RULE_TEMPLATES.map(t => <option key={t.label} value={t.label}>{t.label}</option>)}
+      </select>
+      {conditions.length > 1 && (
+        <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+          Match
+          <div className="flex border border-slate-200 rounded overflow-hidden">
+            <button onClick={() => onChange(Object.assign({}, vis, { match: "all" }))} className={`px-2 py-0.5 ${vis.match !== "any" ? "bg-[var(--accent)] text-white" : "hover:bg-slate-100"}`}>All (AND)</button>
+            <button onClick={() => onChange(Object.assign({}, vis, { match: "any" }))} className={`px-2 py-0.5 border-l border-slate-200 ${vis.match === "any" ? "bg-[var(--accent)] text-white" : "hover:bg-slate-100"}`}>Any (OR)</button>
+          </div>
+        </div>
+      )}
+      {conditions.map((c, i) => (
+        <ConditionRow key={i} cond={c} isFirst={i === 0} match={vis.match} scope={scope}
+          onChangeField={f => updateCond(i, { field: f })}
+          onChangeOperator={o => updateCond(i, { operator: o, value: (o === "is empty" || o === "is not empty") ? "" : c.value })}
+          onChangeValue={v => updateCond(i, { value: v })}
+          onRemove={() => removeCond(i)}/>
+      ))}
+      <button onClick={addCond} className="text-[11px] text-[var(--accent)] hover:underline flex items-center gap-1"><Icon name="plus" size={11}/>Add condition</button>
+    </div>
+  );
+}
+function CodeModeBlock({ vis, scope, onLocalChange, onCommitChange, onExpand }) {
+  const { errors, warnings } = analyzeCode(vis.code || "", scope);
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1">
+        <div className="flex-1 min-w-0">
+          <CodeEditorField value={vis.code || ""} variant="inline"
+            onChange={v => onLocalChange(Object.assign({}, vis, { code: v }))}
+            onBlur={v => onCommitChange(Object.assign({}, vis, { code: v }))}/>
+        </div>
+        <button onClick={onExpand} title="Expand" className="p-1.5 border border-slate-200 rounded hover:bg-slate-100 text-slate-500 shrink-0">
+          <Icon name="maximize2" size={13}/>
+        </button>
+      </div>
+      {errors[0] ? (
+        <div className="text-[11px] text-red-600 flex items-start gap-1">
+          <Icon name="triangleAlert" size={11} className="mt-0.5 shrink-0"/>
+          <span>{errors[0].message}
+            {errors[0].fixPath && (
+              <button onClick={() => onCommitChange(Object.assign({}, vis, { code: vis.code.split(errors[0].path).join(errors[0].fixPath) }))}
+                      className="ml-1 underline hover:no-underline">Fix it</button>
+            )}
+          </span>
+        </div>
+      ) : warnings[0] ? (
+        <div className="text-[11px] text-amber-600 flex items-center gap-1"><Icon name="triangleAlert" size={11}/>{warnings[0].message}</div>
+      ) : null}
+    </div>
+  );
+}
+function LiveResultRow({ visible, runtimeError }) {
+  return (
+    <div className="mt-2">
+      <div className={`text-[11px] px-2 py-1.5 rounded flex items-center gap-1.5 border ${visible ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-500 border-slate-200"}`}>
+        <Icon name={visible ? "eye" : "eyeOff"} size={12}/>
+        With current sample data → <strong>{visible ? "visible" : "hidden"}</strong>
+      </div>
+      {runtimeError && (
+        <div className="mt-1 text-[11px] px-2 py-1.5 rounded bg-red-50 text-red-700 border border-red-200 flex items-start gap-1.5">
+          <Icon name="triangleAlert" size={12} className="mt-0.5 shrink-0"/>
+          <span>Rule failed — block shown by default. <span className="text-red-500">({runtimeError})</span></span>
+        </div>
+      )}
+    </div>
+  );
+}
+function EmptyBehaviorField({ value, onLocalChange, onCommitChange }) {
+  const v = value || { mode: "hide", fallbackText: "" };
+  return (
+    <div className="space-y-2">
+      <label className="text-[11px] font-medium text-slate-500 block">When data is empty</label>
+      <label className="flex items-center gap-2 text-[12px] text-slate-700">
+        <input type="radio" checked={v.mode === "hide"} onChange={() => onCommitChange(Object.assign({}, v, { mode: "hide" }))}/>
+        Hide block
+      </label>
+      <label className="flex items-center gap-2 text-[12px] text-slate-700">
+        <input type="radio" checked={v.mode === "fallback"} onChange={() => onCommitChange(Object.assign({}, v, { mode: "fallback" }))}/>
+        Show fallback text
+      </label>
+      {v.mode === "fallback" && (
+        <input value={v.fallbackText} placeholder="e.g. No tickets to show"
+               onChange={e => onLocalChange(Object.assign({}, v, { fallbackText: e.target.value }))}
+               onBlur={e => onCommitChange(Object.assign({}, v, { fallbackText: e.target.value }))}
+               className="ml-6 border border-slate-200 rounded px-2 py-1 text-[12px]" style={{ width: "calc(100% - 1.5rem)" }}/>
+      )}
+    </div>
+  );
+}
+function ConfirmDialog({ message, onConfirm, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
+      <div className="bg-white rounded-lg shadow-xl border border-slate-200 w-80 p-4">
+        <div className="text-[13px] text-slate-700 mb-4">{message}</div>
+        <div className="flex justify-end gap-2">
+          <button onClick={onCancel} className="px-3 py-1.5 text-[12px] rounded border border-slate-200 hover:bg-slate-50">Cancel</button>
+          <button onClick={onConfirm} className="px-3 py-1.5 text-[12px] rounded bg-red-600 text-white hover:opacity-90">Switch anyway</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function ExpandedFieldModal({ title, hint, initialValue, scope, onSave, onClose }) {
+  const [draft, setDraft] = useState(initialValue);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
+      <div className="bg-white rounded-lg shadow-xl border border-slate-200 flex flex-col" style={{ width: "70vw", height: "70vh" }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">{title}</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={16}/></button>
+        </div>
+        <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 p-3 overflow-hidden flex flex-col">
+            {hint && <div className="text-[11px] text-slate-400 mb-1.5">{hint}</div>}
+            <div className="flex-1 overflow-hidden">
+              <CodeEditorField value={draft} variant="expanded" onChange={setDraft} onBlur={setDraft}/>
+            </div>
+          </div>
+          <div className="w-72 shrink-0 overflow-y-auto p-3 border-l border-slate-200">
+            <div className="text-[11px] font-semibold text-slate-500 mb-2">Fields</div>
+            <FieldTree scope={scope} onPick={path => setDraft(d => (d || "") + path)}/>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-200">
+          <button onClick={onClose} className="px-3 py-1.5 text-[12px] rounded border border-slate-200 hover:bg-slate-50">Cancel</button>
+          <button onClick={() => onSave(draft)} className="px-3 py-1.5 text-[12px] rounded bg-[var(--accent)] text-white hover:opacity-90">Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function makeInteractionsDraft(node) {
+  return {
+    visibility: node.visibility || defaultVisibility(),
+    emptyBehavior: node.emptyBehavior || { mode: "hide", fallbackText: "" }
+  };
+}
+function InteractionsTab({ node, scope, onCommit }) {
+  const [draft, setDraft] = useState(() => makeInteractionsDraft(node));
+  const [confirmState, setConfirmState] = useState(null);
+  const [expandOpen, setExpandOpen] = useState(false);
+  React.useEffect(() => { setDraft(makeInteractionsDraft(node)); setConfirmState(null); setExpandOpen(false); }, [node.id]);
+
+  function setLocal(patch) { setDraft(d => Object.assign({}, d, patch)); }
+  function commit(patch) { const next = Object.assign({}, draft, patch); setDraft(next); onCommit(next); }
+
+  const vis = draft.visibility;
+  const evalResult = evaluateVisibilityConfig(vis, scope);
+
+  function handleModeSwitch(newMode) {
+    if (newMode === vis.mode) return;
+    if (vis.mode === "code" && newMode === "rule" && vis.code && vis.code.trim()) {
+      setConfirmState({
+        message: 'This code can’t be shown as a visual rule. Switching will discard it.',
+        onConfirm: () => { commit({ visibility: Object.assign({}, vis, { mode: "rule", code: "", conditions: [emptyCondition()] }) }); setConfirmState(null); }
+      });
+      return;
+    }
+    if (vis.mode === "rule" && newMode === "code") {
+      commit({ visibility: Object.assign({}, vis, { mode: "code", code: conditionsToCode(vis.conditions, vis.match, scope) }) });
+      return;
+    }
+    commit({ visibility: Object.assign({}, vis, { mode: newMode }) });
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <div className="text-[12px] font-semibold text-slate-700 mb-1.5">Hide this block</div>
+        <VisibilitySegmented mode={vis.mode} onChange={handleModeSwitch}/>
+        <div className="mt-1.5 text-[10px] text-slate-400">
+          {vis.mode === "toggle" && "Simple on/off switch — no data involved."}
+          {vis.mode === "rule" && `Block is visible when ${vis.match === "any" ? "any" : "all"} conditions below are true. Fields resolve against scope: ${scope}.`}
+          {vis.mode === "code" && `Raw JS expression, evaluated as a boolean. Truthy = visible. Scope: ${scope}.`}
+        </div>
+        <div className="mt-2">
+          {vis.mode === "toggle" && <ToggleModeBlock vis={vis} onChange={v => commit({ visibility: v })}/>}
+          {vis.mode === "rule" && <RuleBuilder vis={vis} scope={scope} onChange={v => commit({ visibility: v })}/>}
+          {vis.mode === "code" && (
+            <CodeModeBlock vis={vis} scope={scope}
+              onLocalChange={v => setLocal({ visibility: v })}
+              onCommitChange={v => commit({ visibility: v })}
+              onExpand={() => setExpandOpen(true)}/>
+          )}
+        </div>
+        <LiveResultRow visible={evalResult.visible} runtimeError={evalResult.runtimeError}/>
+      </div>
+
+      <div className="border-t border-slate-200 pt-4">
+        <EmptyBehaviorField value={draft.emptyBehavior}
+          onLocalChange={v => setLocal({ emptyBehavior: v })}
+          onCommitChange={v => commit({ emptyBehavior: v })}/>
+      </div>
+
+      {confirmState && <ConfirmDialog message={confirmState.message} onConfirm={confirmState.onConfirm} onCancel={() => setConfirmState(null)}/>}
+      {expandOpen && (
+        <ExpandedFieldModal title='Edit "Hide this block" — code' hint={`Scope: ${scope} — return a boolean expression.`}
+          initialValue={vis.code || ""} scope={scope} onClose={() => setExpandOpen(false)}
+          onSave={code => { commit({ visibility: Object.assign({}, vis, { code }) }); setExpandOpen(false); }}/>
+      )}
+    </div>
+  );
+}
+
+/* ============================== APPEARANCE / SPACING ============================== */
+function AppearanceField({ label, inherited, value, onOverride, onReset, children }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-[11px] font-medium text-slate-500">{label}</label>
+        {inherited ? (
+          <span className="flex items-center gap-1 text-[10px] text-slate-400">
+            Inherited from tile theme
+            <button onClick={onOverride} className="text-[var(--accent)] hover:underline">Override</button>
+          </span>
+        ) : (
+          <button onClick={onReset} className="text-[10px] text-slate-400 hover:underline">Use tile default</button>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+function AppearanceTab({ node, tileTheme, setTileTheme, onOverride }) {
+  const isRoot = node.id === "card";
+  const ov = node.appearanceOverrides || {};
+  const accent = isRoot ? tileTheme.accentColor : (ov.accentColor != null ? ov.accentColor : tileTheme.accentColor);
+  const density = isRoot ? tileTheme.density : (ov.density != null ? ov.density : tileTheme.density);
+
+  if (isRoot) {
+    return (
+      <div className="space-y-4">
+        <div className="text-[10px] text-slate-400 -mt-1">This block defines the tile theme — other blocks inherit these values.</div>
+        <div>
+          <label className="text-[11px] font-medium text-slate-500 block mb-1">Accent color</label>
+          <div className="flex items-center gap-2">
+            <input type="color" value={accent} onChange={e => setTileTheme(t => Object.assign({}, t, { accentColor: e.target.value }))} className="w-8 h-7 border border-slate-200 rounded"/>
+            <span className="text-[12px] font-mono text-slate-500">{accent}</span>
+          </div>
+        </div>
+        <div>
+          <label className="text-[11px] font-medium text-slate-500 block mb-1">Density</label>
+          <div className="flex border border-slate-200 rounded-md overflow-hidden text-[12px] w-fit">
+            {["compact", "comfortable"].map(d => (
+              <button key={d} onClick={() => setTileTheme(t => Object.assign({}, t, { density: d }))}
+                      className={`px-2.5 py-1 ${density === d ? "bg-[var(--accent)] text-white" : "text-slate-600 hover:bg-slate-100"}`}>{d}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <AppearanceField label="Accent color" inherited={ov.accentColor == null}
+                        onOverride={() => onOverride("accentColor", tileTheme.accentColor)} onReset={() => onOverride("accentColor", null)}>
+        <div className="flex items-center gap-2">
+          <input type="color" value={accent} disabled={ov.accentColor == null}
+                 onChange={e => onOverride("accentColor", e.target.value)}
+                 className="w-8 h-7 border border-slate-200 rounded disabled:opacity-50"/>
+          <span className="text-[12px] font-mono text-slate-500">{accent}</span>
+        </div>
+      </AppearanceField>
+      <AppearanceField label="Density" inherited={ov.density == null}
+                        onOverride={() => onOverride("density", tileTheme.density)} onReset={() => onOverride("density", null)}>
+        <div className="flex border border-slate-200 rounded-md overflow-hidden text-[12px] w-fit">
+          {["compact", "comfortable"].map(d => (
+            <button key={d} disabled={ov.density == null} onClick={() => onOverride("density", d)}
+                    className={`px-2.5 py-1 disabled:cursor-not-allowed ${density === d ? "bg-[var(--accent)] text-white" : "text-slate-600 hover:bg-slate-100"}`}>{d}</button>
+          ))}
+        </div>
+      </AppearanceField>
+    </div>
+  );
+}
+function SpacingField({ label, description, value, onCommit }) {
+  const [focused, setFocused] = useState(false);
+  const [expandOpen, setExpandOpen] = useState(false);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-[11px] font-medium text-slate-500">{label}</label>
+        <button onClick={() => setExpandOpen(true)} className="text-slate-300 hover:text-slate-600" title="Expand"><Icon name="maximize2" size={11}/></button>
+      </div>
+      <input type="number" value={value} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+             onChange={e => onCommit(Number(e.target.value) || 0)}
+             className="w-24 border border-slate-200 rounded px-2 py-1 text-[12px]"/>
+      {focused && <div className="mt-1 text-[10px] text-slate-400"><span className="font-mono">number</span> {description}</div>}
+      {expandOpen && (
+        <ExpandedFieldModal title={`Edit ${label.toLowerCase()}`} hint="Pixel value." initialValue={String(value)} scope="apiData"
+          onClose={() => setExpandOpen(false)}
+          onSave={v => { const n = Number(v); onCommit(isNaN(n) ? value : n); setExpandOpen(false); }}/>
+      )}
+    </div>
+  );
+}
+function SpacingTab({ node, onCommit }) {
+  const spacing = node.spacing || { padding: 8, gap: 8 };
+  const isContainer = CONTAINER_TYPES.includes(node.type);
+  return (
+    <div className="space-y-4">
+      <SpacingField label="Padding" description="Space inside the block, in pixels." value={spacing.padding}
+                    onCommit={v => onCommit(Object.assign({}, spacing, { padding: v }))}/>
+      {isContainer && (
+        <SpacingField label="Gap" description="Space between child blocks, in pixels." value={spacing.gap}
+                      onCommit={v => onCommit(Object.assign({}, spacing, { gap: v }))}/>
+      )}
     </div>
   );
 }
@@ -349,9 +1164,10 @@ function BottomPanel({ tab, onClose }) {
 
 /* ============================== ЛІВА ПАНЕЛЬ: LAYERS / INSERT ============================== */
 function LayerRow(props) {
-  const { node, depth, isSelected, hasChildren, isCollapsed, onToggleCollapse, onSelect,
+  const { node, depth, scope, isSelected, hasChildren, isCollapsed, onToggleCollapse, onSelect,
           isRoot, onDragStart, onDragOver, onDrop, isDropTarget } = props;
   const iconName = TYPE_ICON[node.type] || "box";
+  const audit = getVisibilityAudit(node, scope);
   return (
     <div
       draggable={!isRoot}
@@ -375,16 +1191,22 @@ function LayerRow(props) {
             fx<Tooltip>Transformer "{node.transformerId}" — filters getTickets by source_reference_number</Tooltip>
           </span>
         )}
-        {node.visibility && (
+        {audit.hasVisibility && (
           <span className="relative group/tip text-slate-400">
             <Icon name="eye" size={12}/>
-            <Tooltip>Visibility rule: {node.visibility.text}</Tooltip>
+            <Tooltip>Visibility rule: {audit.description}</Tooltip>
           </span>
         )}
-        {node.visibility && node.visibility.error && (
+        {audit.warningMessage && (
+          <span className="relative group/tip text-amber-500">
+            <Icon name="triangleAlert" size={12}/>
+            <Tooltip>{audit.warningMessage}</Tooltip>
+          </span>
+        )}
+        {audit.errorMessage && (
           <span className="relative group/tip text-red-500">
             <Icon name="triangleAlert" size={12}/>
-            <Tooltip>{node.visibility.error}</Tooltip>
+            <Tooltip>{audit.errorMessage}</Tooltip>
           </span>
         )}
       </span>
@@ -392,13 +1214,13 @@ function LayerRow(props) {
   );
 }
 function LayersTree({ blocks, selectedId, setSelectedId, collapsed, setCollapsed, search, drag, setDrag, onReorder }) {
-  const flat = flattenTree(blocks, 0, collapsed, []);
+  const flat = flattenTree(blocks, 0, collapsed, [], "apiData");
   const q = search.trim().toLowerCase();
   const filtered = q ? flat.filter(f => f.node.name.toLowerCase().includes(q) || f.node.type.toLowerCase().includes(q)) : flat;
   return (
     <div className="overflow-y-auto flex-1">
-      {filtered.map(({ node, depth }) => (
-        <LayerRow key={node.id} node={node} depth={q ? 0 : depth}
+      {filtered.map(({ node, depth, scope }) => (
+        <LayerRow key={node.id} node={node} depth={q ? 0 : depth} scope={scope}
           isSelected={selectedId === node.id}
           hasChildren={!!(node.children && node.children.length > 0)}
           isCollapsed={collapsed.has(node.id)}
@@ -470,7 +1292,7 @@ function LeafContent({ node, dataItem }) {
   if (node.type === "Badge") {
     const status = dataItem ? dataItem.status : "open";
     const styles = {
-      open: "bg-blue-50 text-blue-600 border-blue-200",
+      open: "bg-[var(--accent)]/10 text-[var(--accent)] border-[var(--accent)]/30",
       closed: "bg-slate-100 text-slate-500 border-slate-200",
       pending: "bg-amber-50 text-amber-600 border-amber-200"
     };
@@ -499,8 +1321,12 @@ function BlockWrapper({ node, selectedId, hoveredId, setHoveredId, onSelect, onD
   // рамку виділення показуємо на всіх екземплярах, а міні-тулбар — лише
   // на першому, щоб не дублювати кнопки дій.
   const showToolbar = !dataItem || dataItem.__rowIndex === 0;
+  // Per-block Appearance override (Override-кнопка на Appearance-табі) скопійовує
+  // --accent тільки в межах цього блока й нащадків — see AppearanceTab.
+  const accentOverride = node.appearanceOverrides && node.appearanceOverrides.accentColor;
   return (
     <div
+      style={accentOverride ? { "--accent": accentOverride } : undefined}
       onMouseEnter={e => { e.stopPropagation(); setHoveredId(node.id); }}
       onMouseLeave={e => { e.stopPropagation(); setHoveredId(prev => (prev === node.id ? null : prev)); }}
       onClick={e => { e.stopPropagation(); onSelect(node.id); }}
@@ -518,18 +1344,22 @@ function BlockWrapper({ node, selectedId, hoveredId, setHoveredId, onSelect, onD
   );
 }
 function CanvasBlock(props) {
-  const { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, dataItem } = props;
+  const { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, dataItem, scope } = props;
   const wrapperProps = { node, selectedId, hoveredId, setHoveredId, onSelect, onDuplicate, onDelete, onWrap, dataItem };
+  // Правила видимості на канвасі-редакторі не приховують блок повністю (щоб
+  // його завжди можна було виділити й відредагувати) — лише притлумлюють,
+  // як preview-натяк. Повне застосування правил — у Preview-режимі (фаза 4).
+  const hidden = node.id !== "card" && !evaluateVisibilityConfig(node.visibility, scope).visible;
 
   if (node.type === "Collection") {
     const records = applyTransform();
     return (
       <BlockWrapper {...wrapperProps}>
-        <div className="flex flex-col gap-2 p-2">
+        <div className={`flex flex-col gap-2 p-2 ${hidden ? "opacity-40" : ""}`}>
           {records.map(rec => (
             <div key={rec.id} className="pl-3 border-l border-dashed border-slate-300">
               {(node.children || []).map(child => (
-                <CanvasBlock key={child.id + "-" + rec.id} {...props} node={child} dataItem={rec}/>
+                <CanvasBlock key={child.id + "-" + rec.id} {...props} node={child} dataItem={rec} scope="item"/>
               ))}
             </div>
           ))}
@@ -541,7 +1371,7 @@ function CanvasBlock(props) {
     const isRow = node.name === "Row";
     return (
       <BlockWrapper {...wrapperProps}>
-        <div className={isRow ? "flex items-center gap-3 p-2" : "flex flex-col gap-2 p-2"}>
+        <div className={`${isRow ? "flex items-center gap-3 p-2" : "flex flex-col gap-2 p-2"} ${hidden ? "opacity-40" : ""}`}>
           {(node.children || []).map(child => (
             <div key={child.id} className="pl-3 border-l border-dashed border-slate-300">
               <CanvasBlock {...props} node={child}/>
@@ -553,7 +1383,7 @@ function CanvasBlock(props) {
   }
   return (
     <BlockWrapper {...wrapperProps}>
-      <div className="p-1">
+      <div className={`p-1 ${hidden ? "opacity-40" : ""}`}>
         <LeafContent node={node} dataItem={dataItem}/>
       </div>
     </BlockWrapper>
@@ -587,7 +1417,7 @@ function Breadcrumb({ blocks, selectedId }) {
 }
 
 /* ============================== ПРАВА ПАНЕЛЬ: ВЛАСТИВОСТІ ============================== */
-function PropertiesPanel({ selectedNode, tab, setTab }) {
+function PropertiesPanel({ selectedNode, scope, tab, setTab, tileTheme, setTileTheme, onCommitBlock }) {
   if (!selectedNode) {
     return <div className="p-4 text-[12px] text-slate-400">Select a block on the canvas to edit its properties.</div>;
   }
@@ -604,8 +1434,18 @@ function PropertiesPanel({ selectedNode, tab, setTab }) {
           </button>
         ))}
       </div>
-      <div className="flex-1 overflow-y-auto p-3 text-[12px] text-slate-400">
-        {tab} tab — буде реалізовано у фазі 2.
+      <div className="flex-1 overflow-y-auto p-3">
+        {tab === "Data" && <div className="text-[12px] text-slate-400">Data tab — буде реалізовано у фазі 3.</div>}
+        {tab === "Appearance" && (
+          <AppearanceTab node={selectedNode} tileTheme={tileTheme} setTileTheme={setTileTheme}
+            onOverride={(key, val) => onCommitBlock(n => ({ appearanceOverrides: Object.assign({}, n.appearanceOverrides, { [key]: val }) }))}/>
+        )}
+        {tab === "Spacing" && (
+          <SpacingTab node={selectedNode} onCommit={spacing => onCommitBlock({ spacing })}/>
+        )}
+        {tab === "Interactions" && (
+          <InteractionsTab key={selectedNode.id} node={selectedNode} scope={scope} onCommit={patch => onCommitBlock(patch)}/>
+        )}
       </div>
     </div>
   );
@@ -624,7 +1464,8 @@ function App() {
 
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [propsTab, setPropsTab] = useState("Data");
+  const [propsTab, setPropsTab] = useState("Interactions");
+  const [tileTheme, setTileTheme] = useState({ accentColor: "#4f46e5", density: "comfortable" });
 
   const [tileName, setTileName] = useState("My tickets");
   const [renaming, setRenaming] = useState(false);
@@ -713,6 +1554,16 @@ function App() {
       return clone;
     });
   }
+  function updateBlock(id, patch) {
+    commitBlocks(prev => {
+      const clone = deepClone(prev);
+      const info = findNodeAndParent(clone, id);
+      if (!info) return prev;
+      const p = typeof patch === "function" ? patch(info.node) : patch;
+      Object.assign(info.node, p);
+      return clone;
+    });
+  }
   function reorderBlock(dragId, targetId) {
     if (!dragId || !targetId || dragId === targetId) return;
     commitBlocks(prev => {
@@ -741,9 +1592,11 @@ function App() {
 
   const selInfo = selectedId ? findNodeAndParent(blocks, selectedId) : null;
   const selectedNode = selInfo ? selInfo.node : null;
+  const selectedScope = selectedId ? getScopeForId(blocks, selectedId) : null;
 
   return (
-    <div className="h-screen w-screen flex flex-col overflow-hidden bg-slate-100 text-[13px]">
+    <div className="h-screen w-screen flex flex-col overflow-hidden bg-slate-100 text-[13px]"
+         style={{ "--accent": tileTheme.accentColor }}>
       <TopBar
         canUndo={history.past.length > 0} canRedo={history.future.length > 0}
         onUndo={undo} onRedo={redo}
@@ -795,14 +1648,16 @@ function App() {
                  onClick={e => e.stopPropagation()}>
               <CanvasBlock node={blocks} selectedId={selectedId} hoveredId={hoveredId} setHoveredId={setHoveredId}
                            onSelect={setSelectedId} onDuplicate={duplicateBlock} onDelete={deleteBlock} onWrap={wrapBlock}
-                           dataItem={null}/>
+                           dataItem={null} scope="apiData"/>
             </div>
           </div>
           <Breadcrumb blocks={blocks} selectedId={selectedId}/>
         </div>
 
         <SidePanel side="right" collapsed={rightCollapsed} onToggle={() => setRightCollapsed(v => !v)} width={320}>
-          <PropertiesPanel selectedNode={selectedNode} tab={propsTab} setTab={setPropsTab}/>
+          <PropertiesPanel selectedNode={selectedNode} scope={selectedScope} tab={propsTab} setTab={setPropsTab}
+                           tileTheme={tileTheme} setTileTheme={setTileTheme}
+                           onCommitBlock={patch => updateBlock(selectedId, patch)}/>
         </SidePanel>
       </div>
 
