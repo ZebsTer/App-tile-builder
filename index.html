@@ -156,6 +156,18 @@ const INITIAL_BLOCKS = {
   ]
 };
 
+const INITIAL_API_ACTION = {
+  id: "getTickets", name: "getTickets", resource: "Tickets", method: "GET",
+  url: "https://api.acme.com/v1/tickets",
+  headers: [{ key: "Authorization", value: "Bearer {{secrets.API_TOKEN}}" }],
+  body: "", auth: "inherit", authValue: "", runBehavior: "onLoad",
+  lastStatus: 200, lastDurationMs: 142, lastSizeKb: 3.1, hasOutputSchema: true
+};
+const INITIAL_TRANSFORMER = {
+  id: "filterINC", name: "filterINC", sourceId: "getTickets",
+  code: "function transform({ apiData }) {\n  return apiData.tickets.filter(t => t.source_reference_number.startsWith('INC'));\n}"
+};
+
 const CONTAINER_TYPES = ["Container", "Collection", "Tabs"];
 const TYPE_ICON = {
   Container: "box", Text: "type", Image: "image", Button: "button", Tabs: "tabs",
@@ -1253,29 +1265,333 @@ function InsertGrid({ onInsert }) {
     </div>
   );
 }
-function DataPanelStub({ onOpenStub }) {
+// OPEN QUESTION: скільки API Actions може мати тайл — не визначено у ТЗ.
+// Панель розрахована на масив джерел (кнопка "+" реально додає нове), але
+// мок навмисно постачає лише одне джерело (getTickets) + один трансформер.
+function DataPanel({ dataSources, transformers, blocks, onOpenSource, onAddSource, onOpenTransformer, onOpenSample }) {
   return (
     <div className="border-t border-slate-200 flex flex-col" style={{ height: "40%" }}>
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200">
         <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Data</span>
-        <button onClick={onOpenStub} className="p-1 rounded hover:bg-slate-200 text-slate-500" title="Add data source">
+        <button onClick={onAddSource} className="p-1 rounded hover:bg-slate-200 text-slate-500" title="Add data source">
           <Icon name="plus" size={14}/>
         </button>
       </div>
       <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-        {/* OPEN QUESTION: панель розрахована на кілька API Actions на тайл,
-            але в моці навмисно показано лише одне джерело (getTickets). */}
-        <button onClick={onOpenStub} className="w-full text-left border border-slate-200 rounded-md px-2 py-1.5 text-[12px] flex items-center justify-between bg-white hover:border-[var(--accent)]">
-          <div className="flex items-center gap-1.5"><Icon name="database" size={13} className="text-slate-400"/><span>getTickets</span></div>
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 border border-emerald-200">200</span>
+        {dataSources.map(src => (
+          <button key={src.id} onClick={() => onOpenSource(src.id)}
+                  className="w-full text-left border border-slate-200 rounded-md px-2 py-1.5 text-[12px] flex items-center justify-between bg-white hover:border-[var(--accent)]">
+            <div className="flex items-center gap-1.5 min-w-0"><Icon name="database" size={13} className="text-slate-400 shrink-0"/><span className="truncate">{src.name}</span></div>
+            {src.lastStatus ? (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded border shrink-0 ${src.lastStatus < 400 ? "bg-emerald-50 text-emerald-600 border-emerald-200" : "bg-red-50 text-red-600 border-red-200"}`}>{src.lastStatus}</span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded border border-slate-200 text-slate-400 shrink-0">not run</span>
+            )}
+          </button>
+        ))}
+        {transformers.map(t => {
+          const consumer = findConsumerLabel(blocks, t.id);
+          const src = dataSources.find(s => s.id === t.sourceId);
+          return (
+            <button key={t.id} onClick={() => onOpenTransformer(t.id)}
+                    className="w-full text-left border border-slate-200 rounded-md px-2 py-1.5 text-[12px] flex items-center justify-between bg-white hover:border-[var(--accent)]">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="font-mono text-[10px] px-1 rounded bg-violet-50 text-violet-600 shrink-0">fx</span>
+                <div className="min-w-0"><div className="truncate">{t.name}</div><div className="text-[10px] text-slate-400 truncate">filters {src ? src.name : "?"}</div></div>
+              </div>
+              <span className="text-[10px] text-slate-400 shrink-0">{consumer ? "ok" : "unused"}</span>
+            </button>
+          );
+        })}
+        <button onClick={onOpenSample} className="w-full text-left text-[11px] text-slate-400 hover:text-slate-600 px-1 py-1">
+          Sample payload · {SAMPLE_PAYLOAD.tickets.length} records
         </button>
-        <button onClick={onOpenStub} className="w-full text-left border border-slate-200 rounded-md px-2 py-1.5 text-[12px] flex items-center justify-between bg-white hover:border-[var(--accent)]">
-          <div className="flex items-center gap-1.5"><span className="font-mono text-[10px] px-1 rounded bg-violet-50 text-violet-600">fx</span>
-            <div><div>filterINC</div><div className="text-[10px] text-slate-400">filters getTickets</div></div>
+      </div>
+    </div>
+  );
+}
+function findConsumerLabel(root, transformerId) {
+  let found = null;
+  (function walk(n) {
+    if (found || !n) return;
+    if (n.transformerId === transformerId) { found = `${n.type} "${n.name}"`; return; }
+    (n.children || []).forEach(walk);
+  })(root);
+  return found;
+}
+function emptyApiAction() {
+  return {
+    id: genId("source"), name: "newSource", resource: "", method: "GET", url: "",
+    headers: [{ key: "", value: "" }], body: "", auth: "inherit", authValue: "",
+    runBehavior: "onLoad", lastStatus: null, lastDurationMs: null, lastSizeKb: null, hasOutputSchema: false
+  };
+}
+function summarizeType(v) {
+  if (v === null || v === undefined) return "null";
+  if (Array.isArray(v)) return `array[${v.length}]`;
+  return typeof v;
+}
+function JsonSummary({ value }) {
+  if (value === null || typeof value !== "object") return <div className="text-[11px] font-mono text-slate-600">{String(value)}</div>;
+  return (
+    <div className="space-y-1">
+      {Object.keys(value).map(k => (
+        <div key={k} className="flex items-center justify-between text-[11px]">
+          <span className="font-mono text-slate-700">{k}</span>
+          <span className="text-slate-400">{summarizeType(value[k])}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function HeaderRow({ h, onChange, onRemove }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <input value={h.key} onChange={e => onChange(Object.assign({}, h, { key: e.target.value }))} placeholder="Header name"
+             className="flex-1 min-w-0 border border-slate-200 rounded px-2 py-1 text-[12px] font-mono"/>
+      <input value={h.value} onChange={e => onChange(Object.assign({}, h, { value: e.target.value }))} placeholder="Value"
+             className="flex-1 min-w-0 border border-slate-200 rounded px-2 py-1 text-[12px] font-mono"/>
+      <button onClick={onRemove} className="text-slate-300 hover:text-red-500 p-0.5 shrink-0"><Icon name="x" size={12}/></button>
+    </div>
+  );
+}
+function ApiActionModal({ source, isNew, onSave, onClose }) {
+  const [draft, setDraft] = useState(source);
+  const [tab, setTab] = useState("Headers");
+  const [fetching, setFetching] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState(() => JSON.stringify(SAMPLE_PAYLOAD, null, 2));
+  const [pasteError, setPasteError] = useState(null);
+  const [parsedOutput, setParsedOutput] = useState(source.hasOutputSchema ? SAMPLE_PAYLOAD : null);
+
+  function set(patch) { setDraft(d => Object.assign({}, d, patch)); }
+  function setHeader(i, h) { const next = draft.headers.slice(); next[i] = h; set({ headers: next }); }
+  function addHeader() { set({ headers: draft.headers.concat([{ key: "", value: "" }]) }); }
+  function removeHeader(i) { const next = draft.headers.slice(); next.splice(i, 1); set({ headers: next.length ? next : [{ key: "", value: "" }] }); }
+
+  function fetchLive() {
+    setFetching(true);
+    // OPEN QUESTION: жодних реальних HTTP-запитів у прототипі — "Fetch live"
+    // симулює затримку мережі й повертає SAMPLE_PAYLOAD.
+    setTimeout(() => {
+      setParsedOutput(SAMPLE_PAYLOAD);
+      set({ hasOutputSchema: true, lastStatus: 200, lastDurationMs: 130, lastSizeKb: 3.1 });
+      setFetching(false);
+    }, 700);
+  }
+  function applyPaste() {
+    try {
+      const parsed = JSON.parse(pasteText);
+      setParsedOutput(parsed);
+      set({ hasOutputSchema: true });
+      setPasteError(null);
+      setPasteOpen(false);
+    } catch (e) {
+      setPasteError("Invalid JSON: " + e.message);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
+      <div className="relative bg-white rounded-lg shadow-xl border border-slate-200 flex flex-col" style={{ width: 640, maxHeight: "85vh" }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">{isNew ? "New data source" : `Edit data source — ${source.name}`}</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={16}/></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label className="text-[11px] font-medium text-slate-500 block mb-1">Resource</label>
+              <input value={draft.name} onChange={e => set({ name: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px]"/>
+            </div>
+            <div>
+              <label className="text-[11px] font-medium text-slate-500 block mb-1">Method</label>
+              <select value={draft.method} onChange={e => set({ method: e.target.value })} className="border border-slate-200 rounded px-2 py-1.5 text-[12px] bg-white">
+                {["GET", "POST", "PUT", "PATCH", "DELETE"].map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
           </div>
-          <span className="text-[10px] text-slate-400">ok</span>
-        </button>
-        <div className="text-[11px] text-slate-400 px-1 py-1">Sample payload · 3 records</div>
+          <div>
+            <label className="text-[11px] font-medium text-slate-500 block mb-1">URL</label>
+            <input value={draft.url} onChange={e => set({ url: e.target.value })} placeholder="https://api.example.com/v1/…"
+                   className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px] font-mono"/>
+          </div>
+
+          <div>
+            <div className="flex border-b border-slate-200 text-[12px] mb-2">
+              {["Headers", "Body", "Auth"].map(t => (
+                <button key={t} onClick={() => setTab(t)} className={`px-3 py-1.5 border-b-2 -mb-px ${tab === t ? "border-[var(--accent)] text-[var(--accent)] font-medium" : "border-transparent text-slate-500"}`}>{t}</button>
+              ))}
+            </div>
+            {tab === "Headers" && (
+              <div className="space-y-1.5">
+                {draft.headers.map((h, i) => <HeaderRow key={i} h={h} onChange={hh => setHeader(i, hh)} onRemove={() => removeHeader(i)}/>)}
+                <button onClick={addHeader} className="text-[11px] text-[var(--accent)] hover:underline flex items-center gap-1"><Icon name="plus" size={11}/>Add header</button>
+              </div>
+            )}
+            {tab === "Body" && (
+              draft.method === "GET" || draft.method === "DELETE" ? (
+                <div className="text-[11px] text-slate-400">{draft.method} requests don't send a body.</div>
+              ) : (
+                <textarea value={draft.body} onChange={e => set({ body: e.target.value })} rows={5} placeholder="{}"
+                          className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px] font-mono resize-none"/>
+              )
+            )}
+            {tab === "Auth" && (
+              <div className="space-y-2">
+                <select value={draft.auth} onChange={e => set({ auth: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px] bg-white">
+                  <option value="inherit">Inherit tile auth</option>
+                  <option value="bearer">Bearer token</option>
+                  <option value="apiKey">API key</option>
+                  <option value="none">None</option>
+                </select>
+                {(draft.auth === "bearer" || draft.auth === "apiKey") && (
+                  <input value={draft.authValue || ""} onChange={e => set({ authValue: e.target.value })}
+                         placeholder={draft.auth === "bearer" ? "{{secrets.API_TOKEN}}" : "Header name = value"}
+                         className="w-full border border-slate-200 rounded px-2 py-1.5 text-[12px] font-mono"/>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-[11px] font-medium text-slate-500 block mb-1">Run behavior</label>
+            <div className="flex border border-slate-200 rounded-md overflow-hidden text-[12px] w-fit">
+              {[["onLoad", "On load"], ["onDemand", "On demand"]].map(([v, l]) => (
+                <button key={v} onClick={() => set({ runBehavior: v })} className={`px-3 py-1.5 ${draft.runBehavior === v ? "bg-[var(--accent)] text-white" : "text-slate-600 hover:bg-slate-100"}`}>{l}</button>
+              ))}
+            </div>
+            <div className="mt-1 text-[10px] text-slate-400">
+              {draft.runBehavior === "onLoad" ? "Fetched automatically when the tile loads." : "Fetched only when explicitly triggered (e.g. by a button)."}
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[11px] font-medium text-slate-500">Output schema</label>
+              <div className="flex items-center gap-1.5">
+                <button onClick={fetchLive} disabled={fetching} className="text-[11px] px-2 py-1 rounded border border-slate-200 hover:bg-slate-50 disabled:opacity-50">
+                  {fetching ? "Fetching…" : "Fetch live"}
+                </button>
+                <button onClick={() => setPasteOpen(true)} className="text-[11px] px-2 py-1 rounded bg-[var(--accent)] text-white hover:opacity-90 font-medium">Paste JSON</button>
+              </div>
+            </div>
+            {parsedOutput ? (
+              <div className="border border-slate-200 rounded p-2 bg-slate-50">
+                <JsonSummary value={parsedOutput}/>
+                {draft.lastStatus && (
+                  <div className="mt-2 pt-2 border-t border-slate-200 text-[10px] text-slate-400">Last response: {draft.lastStatus} · {draft.lastDurationMs}ms · {draft.lastSizeKb}kb</div>
+                )}
+              </div>
+            ) : (
+              <div className="text-[11px] text-slate-400 border border-dashed border-slate-200 rounded p-3 text-center">No output schema yet — fetch live or paste a sample response.</div>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-200">
+          <button onClick={onClose} className="px-3 py-1.5 text-[12px] rounded border border-slate-200 hover:bg-slate-50">Cancel</button>
+          <button onClick={() => onSave(draft)} className="px-3 py-1.5 text-[12px] rounded bg-[var(--accent)] text-white hover:opacity-90">Save</button>
+        </div>
+
+        {pasteOpen && (
+          <div className="absolute inset-0 bg-white flex flex-col rounded-lg">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+              <span className="text-[13px] font-semibold">Paste JSON response</span>
+              <button onClick={() => setPasteOpen(false)} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={16}/></button>
+            </div>
+            <div className="flex-1 overflow-hidden p-4 flex flex-col">
+              <div className="text-[11px] text-slate-400 mb-2">Paste a sample JSON response — this becomes the output schema for field pickers and previews.</div>
+              <textarea value={pasteText} onChange={e => { setPasteText(e.target.value); setPasteError(null); }}
+                        className="flex-1 border border-slate-200 rounded p-2 text-[11px] font-mono resize-none"/>
+              {pasteError && <div className="mt-2 text-[11px] text-red-600 flex items-center gap-1"><Icon name="triangleAlert" size={11}/>{pasteError}</div>}
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-200">
+              <button onClick={() => setPasteOpen(false)} className="px-3 py-1.5 text-[12px] rounded border border-slate-200 hover:bg-slate-50">Cancel</button>
+              <button onClick={applyPaste} className="px-3 py-1.5 text-[12px] rounded bg-[var(--accent)] text-white hover:opacity-90">Use this JSON</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+function runTransformer(code, apiData) {
+  try {
+    const fn = new Function("apiData", code + "\nreturn transform({ apiData: apiData });");
+    return { result: fn(apiData), error: null };
+  } catch (e) {
+    return { result: null, error: e.message };
+  }
+}
+function TransformerModal({ transformer, dataSources, blocks, onSave, onClose }) {
+  const [code, setCode] = useState(transformer.code);
+  const source = dataSources.find(s => s.id === transformer.sourceId);
+  const { result, error } = runTransformer(code, SAMPLE_PAYLOAD);
+  const consumer = findConsumerLabel(blocks, transformer.id);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
+      <div className="bg-white rounded-lg shadow-xl border border-slate-200 flex flex-col" style={{ width: "78vw", height: "82vh" }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">Edit transformer — {transformer.name}</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={16}/></button>
+        </div>
+        <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+            <div className="text-[11px] text-slate-400 px-3 pt-3">
+              {source ? `Transforms the output of "${source.name}"` : "No source assigned"} — must return a value from <span className="font-mono">transform({"{ apiData }"})</span>.
+            </div>
+            <div className="flex-1 p-3 overflow-hidden">
+              <CodeEditorField value={code} variant="expanded" onChange={setCode} onBlur={setCode}/>
+            </div>
+            <div className="border-t border-slate-200 p-3 overflow-y-auto shrink-0" style={{ maxHeight: "36%" }}>
+              <div className="text-[11px] font-semibold text-slate-500 mb-1.5">Output preview</div>
+              {error ? (
+                <div className="text-[11px] text-red-600 bg-red-50 border border-red-200 rounded p-2 flex items-start gap-1.5">
+                  <Icon name="triangleAlert" size={12} className="mt-0.5 shrink-0"/>Transform failed: {error}
+                </div>
+              ) : Array.isArray(result) ? (
+                <div className="space-y-1.5">
+                  <div className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 inline-block">
+                    Showing {result.length} of {SAMPLE_PAYLOAD.tickets.length} records
+                  </div>
+                  <div className="border border-slate-200 rounded divide-y divide-slate-100">
+                    {result.map((r, i) => (
+                      <div key={i} className="px-2 py-1 text-[11px] flex items-center justify-between gap-2">
+                        <span className="font-mono text-slate-600 shrink-0">{r && r.id != null ? String(r.id) : "—"}</span>
+                        <span className="text-slate-400 truncate flex-1">{r && r.summary}</span>
+                        <span className="text-slate-400 shrink-0">{r && r.status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-500 font-mono bg-slate-50 border border-slate-200 rounded p-2 break-all">{JSON.stringify(result)}</div>
+              )}
+              <div className="mt-2 text-[10px] text-slate-400">Consumed by: {consumer || "not used by any block"}</div>
+            </div>
+          </div>
+          <div className="w-64 shrink-0 overflow-y-auto p-3 border-l border-slate-200">
+            <div className="text-[11px] font-semibold text-slate-500 mb-2">Fields</div>
+            <FieldTree scope="apiData" onPick={path => setCode(c => (c || "") + path)}/>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-200">
+          <button onClick={onClose} className="px-3 py-1.5 text-[12px] rounded border border-slate-200 hover:bg-slate-50">Cancel</button>
+          <button onClick={() => onSave(code)} className="px-3 py-1.5 text-[12px] rounded bg-[var(--accent)] text-white hover:opacity-90">Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function SamplePayloadModal({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20">
+      <div className="bg-white rounded-lg shadow-xl border border-slate-200 flex flex-col" style={{ width: "60vw", height: "70vh" }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+          <span className="text-[13px] font-semibold">Sample payload</span>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100 text-slate-500"><Icon name="x" size={16}/></button>
+        </div>
+        <pre className="flex-1 overflow-auto p-4 text-[11px] font-mono text-slate-700 bg-slate-50 whitespace-pre-wrap">{JSON.stringify(SAMPLE_PAYLOAD, null, 2)}</pre>
       </div>
     </div>
   );
@@ -1467,6 +1783,12 @@ function App() {
   const [propsTab, setPropsTab] = useState("Interactions");
   const [tileTheme, setTileTheme] = useState({ accentColor: "#4f46e5", density: "comfortable" });
 
+  const [dataSources, setDataSources] = useState([INITIAL_API_ACTION]);
+  const [transformers, setTransformers] = useState([INITIAL_TRANSFORMER]);
+  const [apiActionModal, setApiActionModal] = useState(null);
+  const [transformerModalId, setTransformerModalId] = useState(null);
+  const [sampleViewerOpen, setSampleViewerOpen] = useState(false);
+
   const [tileName, setTileName] = useState("My tickets");
   const [renaming, setRenaming] = useState(false);
   const [tileNameInput, setTileNameInput] = useState(tileName);
@@ -1578,6 +1900,19 @@ function App() {
     });
   }
 
+  function openApiAction(id) {
+    const src = dataSources.find(s => s.id === id);
+    if (src) setApiActionModal({ source: src, isNew: false });
+  }
+  function saveApiAction(draft) {
+    setDataSources(prev => prev.some(s => s.id === draft.id) ? prev.map(s => (s.id === draft.id ? draft : s)) : prev.concat([draft]));
+    setApiActionModal(null);
+  }
+  function saveTransformer(id, code) {
+    setTransformers(prev => prev.map(t => (t.id === id ? Object.assign({}, t, { code }) : t)));
+    setTransformerModalId(null);
+  }
+
   function commitTileName() {
     setTileName(tileNameInput.trim() || tileName);
     setRenaming(false);
@@ -1638,7 +1973,9 @@ function App() {
               <InsertGrid onInsert={handleInsert}/>
             )}
           </div>
-          <DataPanelStub onOpenStub={() => showToast("Редактор джерел даних — буде реалізовано у фазі 3")}/>
+          <DataPanel dataSources={dataSources} transformers={transformers} blocks={blocks}
+                     onOpenSource={openApiAction} onAddSource={() => setApiActionModal({ source: emptyApiAction(), isNew: true })}
+                     onOpenTransformer={id => setTransformerModalId(id)} onOpenSample={() => setSampleViewerOpen(true)}/>
         </SidePanel>
 
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -1675,6 +2012,15 @@ function App() {
           Список чекпоінтів із Preview / Restore — буде реалізовано у фазі 4.
         </StubDrawer>
       )}
+      {apiActionModal && (
+        <ApiActionModal source={apiActionModal.source} isNew={apiActionModal.isNew}
+                         onSave={saveApiAction} onClose={() => setApiActionModal(null)}/>
+      )}
+      {transformerModalId && (
+        <TransformerModal transformer={transformers.find(t => t.id === transformerModalId)} dataSources={dataSources} blocks={blocks}
+                           onSave={code => saveTransformer(transformerModalId, code)} onClose={() => setTransformerModalId(null)}/>
+      )}
+      {sampleViewerOpen && <SamplePayloadModal onClose={() => setSampleViewerOpen(false)}/>}
       <Toast message={toast}/>
     </div>
   );
